@@ -1,0 +1,20 @@
+(int, int) main() {
+            slice ds = get_data().begin_parse();
+            int a = ds~load_uint(32);
+            int b = ds~load_uint(32);
+    
+            set_data(
+                begin_cell()
+                .store_uint(20, 32)
+                .store_uint(21, 32)
+                .end_cell()
+            );
+            var msg = begin_cell().store_uint(777, 32).end_cell();
+            send_raw_message(msg, 3);
+            
+            return (a * b, 2 * 2 * 2 * 2 * 2 * 2 * 2 * 2 * 2 * 2);
+        }  
+        
+        int test(int a, int b) method_id {
+            return a + b * a;
+        }  

@@ -1,0 +1,125 @@
+() send_money(int wc, int addr, int amount, int mode) impure {
+    send_raw_message(
+        begin_cell()
+            .store_uint(0xc4, 9)
+            .store_int(wc, 8)
+            .store_uint(addr, 256)
+            .store_grams(amount)
+            .store_uint(0, 1 + 4 + 4 + 64 + 32 + 1 + 1)
+            .store_uint(0, 32) ;; Simple money transfer
+            .end_cell(), 
+        mode
+    );
+}
+
+(slice, (int)) ~load_decimal_symbol(slice source) {
+    int n = source~load_uint(8);
+    n = n - 48;
+    throw_unless(400, n >= 0);
+    throw_if(400, n > 9);
+    return (source, (n));
+}
+
+(int, int, int, int, int) parse_command(slice source) {
+    int value_amount = 0;
+
+    ;; Parse op id to ":"
+    while (source.preload_uint(8) != 0x3a) {
+        var next_decimal = source~load_decimal_symbol();
+
+        value_amount *= 10;
+        value_amount += next_decimal;
+    }
+
+    ;; Skip ":"
+    source~load_uint(8);
+
+    int mode = 0;
+
+    ;; Parse arg to ":"
+    while (source.preload_uint(8) != 0x3a) {
+        var next_decimal = source~load_decimal_symbol();
+
+        mode *= 10;
+        mode += next_decimal;
+    }
+
+    ;; Skip ":"
+    source~load_uint(8); 
+
+    var use_reserve = source~load_uint(8);
+
+    ;; We expect either ":" if no reserve or anything else if reserve
+    if (use_reserve == 0x3a) {
+        return (value_amount, mode, false, 0, 0);
+    }
+
+    int reserve_amount = 0;
+    ;; Parse arg to ":"
+    while (source.preload_uint(8) != 0x3a) {
+        var next_decimal = source~load_decimal_symbol();
+
+        reserve_amount *= 10;
+        reserve_amount += next_decimal;
+    }
+
+    ;; Skip ":"
+    source~load_uint(8); 
+
+    int reserve_mode = 0;
+    ;; Parse arg to ":"
+    while (source.preload_uint(8) != 0x3a) {
+        var next_decimal = source~load_decimal_symbol();
+
+        reserve_mode *= 10;
+        reserve_mode += next_decimal;
+    }           
+
+    return (value_amount, mode, true, reserve_amount, reserve_mode);
+}
+
+(int, int, int, int, int) recv_internal(int smc_balance, int msg_value, cell msg, slice msg_body) {
+    ;; ignore empty messages
+    if (msg_body.slice_empty?()) {
+        return (0, 0, 0, 0, 0);
+    }
+
+    slice cs = msg.begin_parse();
+    int flags = cs~load_uint(4);
+
+    ;; ignore all bounced messages
+    if (flags & 1) {
+        return (0, 0, 0, 0, 0);
+    }
+
+    int op_no = msg_body~load_uint(32);
+
+    slice sender_address = cs~load_msg_addr();
+
+    ;; Only accept message with comment
+    throw_if(404, op_no != 0);
+
+    var (value_amount, mode, do_reserve, reserve_amount, reserve_mode) = parse_command(msg_body);
+
+    var (wc, address) = sender_address.parse_std_addr();
+    
+    if (do_reserve) {
+        raw_reserve(reserve_amount, reserve_mode);
+    }
+
+    
+    send_money(wc, address, value_amount, mode);
+    return (value_amount, mode, true, reserve_amount, reserve_mode);
+}
+
+() recv_external(slice in_msg) {
+    slice ds = get_data().begin_parse();
+
+    int inited = ds~load_uint(1);
+
+    ds.end_parse();
+    throw_if(400, inited);
+    accept_message();
+
+    set_data(begin_cell().store_uint(1, 1).end_cell());
+}

@@ -1,0 +1,747 @@
+;;
+;;  TON NFT Smart Contract
+;;
+
+
+
+;;
+;;
+;;  Storage
+;;
+;;  :Metadata Cell:
+;;
+;;  uint10 name_len
+;;  name_len * bit name
+;;  uint10 symbol_len
+;;  symbol_len * bit symbol
+;;
+;;
+;;  :Root Cell:
+;;
+;;  uint1 inited
+;;  metadata_cell metadata
+;;  addr_std$10 creator
+;;  addr_std$10 owner
+;;  cell content
+;;  sales_cell sales
+;;
+;;  :Sales cell:
+;;
+;;  uint1 is_on_sale
+;;  uint1 is_last_bid_historical
+;;  grams last_bid_value
+;;  addr_std$10 last_bidder
+;;  uint8 fees_percent
+;;  addr_std$10 fees_destination
+;;  uint8 royalties_percent
+;;  addr_std$10 royalties_destination
+;;
+;;
+
+(slice, (cell, cell)) ~load_metadata(slice cs) inline {
+
+    var name_len = cs~load_uint(10);
+    var name_bits = cs~load_bits(name_len * 8);
+
+    var symbol_len = cs~load_uint(10);
+    var symbol_bits = cs~load_bits(symbol_len * 8);
+
+    var name = begin_cell().store_slice(name_bits).end_cell();
+    var symbol = begin_cell().store_slice(symbol_bits).end_cell();
+
+    return (cs, (name, symbol));
+}
+
+;; int is_on_sale
+;; int is_last_bid_historical
+;; int last_bid_value
+;; slice last_bidder_address
+;; int fees_percent
+;; slice fees_destination_address
+;; int royalties_percent
+;; slice royalties_destination_address
+
+(slice, (int, int, int, slice, int, slice, int, slice)) ~load_sales_data(slice ds) inline {
+
+    ;; parse_std_addr()
+    var res = (
+        ds~load_uint(1),              ;; is_on_sale
+        ds~load_uint(1),              ;; is_last_bid_historical
+        ds~load_grams(),              ;; last_bid_value
+        ds~load_msg_addr(),           ;; last_bidder
+        ds~load_uint(8),              ;; fees_percent
+        ds~load_msg_addr(),           ;; fees_destination
+        ds~load_uint(8),              ;; royalties_percent
+        ds~load_msg_addr()            ;; royalties_destination
+    );
+
+    return (ds, res);
+}
+
+builder store_sales_data(builder b, var ds) impure {
+    (
+        int is_on_sale,
+        int is_last_bid_historical,
+        int last_bid_value,
+        slice last_bidder,
+        int fees_percent,
+        slice fees_destination,
+        int royalties_percent,
+        slice royalties_destination
+    ) = ds;
+
+    return b
+        .store_uint(is_on_sale, 1)
+        .store_uint(is_last_bid_historical, 1)
+        .store_grams(last_bid_value)
+        .store_slice(last_bidder)
+        .store_uint(fees_percent, 8)
+        .store_slice(fees_destination)
+        .store_uint(royalties_percent, 8)
+        .store_slice(royalties_destination);
+}
+
+_ load_data() impure {
+    slice ds = get_data().begin_parse();
+    int inited = ds~load_uint(1);     ;; inited
+    var res = (
+        ds~load_ref(),                ;; metadata cell
+        ds~load_msg_addr(),           ;; creator
+        ds~load_msg_addr(),           ;; owner
+        ds~load_ref(),                ;; content
+        ds~load_ref()                 ;; sales cell
+    );
+    ds.end_parse();
+    return res;
+}
+
+() store_data(var ds) impure {
+    (cell metadata_cell, slice creator, slice owner, cell content, cell sales_cell) = ds;
+    set_data(
+        begin_cell()
+            .store_uint(1, 1)
+            .store_ref(metadata_cell)
+            .store_slice(creator)
+            .store_slice(owner)
+            .store_ref(content)
+            .store_ref(sales_cell)
+            .end_cell()
+    );
+}
+
+;;
+;; Serializes
+;; addr_std$10 anycast:(Maybe Anycast) workchain_id:int8 address:bits256 = MsgAddressInt;
+;; output is 267 bits
+;;
+slice pack_std_addr(int wc, int addr) {
+    return begin_cell()
+        .store_uint(2, 2)
+        .store_uint(0, 1)
+        .store_int(wc, 8)
+        .store_uint(addr, 256)
+        .end_cell()
+        .begin_parse();
+}
+
+(slice, (int)) ~load_decimal_symbol(slice source) {
+  int n = source~load_uint(8);
+  n = n - 48;
+  throw_unless(400, n >= 0);
+  throw_if(400, n > 9);
+  return (source, (n));
+}
+
+(slice, (int)) ~load_hex_symbol(slice source) {
+    int n = source~load_uint(8);
+    n = n - 48;
+    throw_unless(400, n >= 0);
+    if (n < 10) {
+        return (source, (n));
+    }
+    n = n - 7;
+    throw_unless(400, n >= 0);
+    if (n < 16) {
+        return (source, (n));
+    }
+    n = n - 32;
+    throw_unless(400, (n >= 0) & (n < 16));
+    return (source, (n));
+}
+
+(slice, (int, int)) ~parse_raw_text_address(slice source) {
+    int n = source~load_uint(8);
+    var is_negative = n == 0x2d; ;; minus sign
+
+    int wc = 0;
+
+    ;; Parse workchain id
+    while (source.preload_uint(8) != 0x3a) {
+        var next_decimal = source~load_decimal_symbol();
+
+        wc *= 10;
+        wc += next_decimal;
+    }
+
+    if (is_negative) {
+        wc *= -1;
+    }
+
+    ;; Handle : separator
+    var separator = source~load_uint(8);
+    throw_unless(400, separator == 0x3a);
+
+    ;; Parse address 64 bytes
+    int address = 0;
+    repeat (64) {
+        address = address * 16 + source~load_hex_symbol();
+    }
+
+    return (source, (wc, address));
+}
+
+() handle_comment_message (slice msg_body, slice sender_address) impure {
+    ;; For giftTo request one Cell is not enough
+    if (msg_body.slice_data_empty?() & (msg_body.slice_refs() == 1)) {
+      cell ref_msg = msg_body~load_ref();
+      msg_body = ref_msg.begin_parse();
+    }
+
+    ;; 'giftTo:'
+    int command = msg_body~load_uint(56);
+    throw_unless(400, command == 0x67696674546f3a);
+    var (int destination_wc, int destination_address) = msg_body~parse_raw_text_address();
+
+    (cell metadata, slice creator, slice owner, cell content, cell sales) = load_data();
+
+    (int owner_wc, int owner_address) = parse_std_addr(owner);
+    (int sender_wc, int sender_address) = parse_std_addr(sender_address);
+
+    if (owner_wc != sender_wc) {
+        throw(400);
+    }
+    if (owner_address != sender_address) {
+        throw(400);
+    }
+
+    if ((owner_wc == destination_wc) & (owner_address == destination_address)) {
+        throw(400);
+    }
+
+    var new_owner_address = pack_std_addr(destination_wc, destination_address);
+    store_data((metadata, creator, new_owner_address, content, sales));
+}
+
+() send_money(int wc, int addr, int amount) impure {
+    send_raw_message(
+        begin_cell()
+            .store_uint(0xc4, 9)
+            .store_int(wc, 8)
+            .store_uint(addr, 256)
+            .store_grams(amount)
+            .store_uint(0, 1 + 4 + 4 + 64 + 32 + 1 + 1)
+            .store_uint(0, 32) ;; Simple money transfer
+            .end_cell(),
+        3
+    );
+}
+
+() handle_place_a_bid(slice sender_address, int msg_value) impure {
+
+    (cell metadata, slice creator, slice owner, cell content, cell sales) = load_data();
+
+    var ds = sales.begin_parse();
+    (
+        int is_on_sale,
+        int is_last_bid_historical,
+        int last_bid_value,
+        slice last_bidder,
+        int fees_percent,
+        slice fees_destination,
+        int royalties_percent,
+        slice royalties_destination
+    ) = ds~load_sales_data();
+
+    ;; Throw if NFT is not on sale
+    throw_if(400, is_on_sale == 0);
+
+    ;; Substract 1TON for fees
+    var bid_value = msg_value - 1000000000;
+
+    ;; Throw if bid is less than 1TON
+    throw_if(400, bid_value < 1000000000);
+
+    ;; Throw if last bid was greater or equal
+    throw_if(400, last_bid_value >= bid_value);
+
+    (int owner_wc, int owner_address) = parse_std_addr(owner);
+    (int sender_wc, int sender_addr) = sender_address.parse_std_addr();
+
+    ;; Throw if bidder is owner
+    if ((owner_wc == sender_wc) & (sender_addr == owner_address)) {
+        throw(400);
+    }
+
+    ;; Return value to previous bidder if last_bid > 0 and bid is not historical
+    if ((last_bid_value > 0) & ( ~ is_last_bid_historical)) {
+        var (wc, address) = last_bidder.parse_std_addr();
+        send_money(wc, address, last_bid_value);
+    }
+
+    ;; TODO: Return remairing
+
+    ;; Save data with new bid
+    var sales_data = (
+        is_on_sale,
+        is_last_bid_historical,
+        bid_value,
+        sender_address,
+        fees_percent,
+        fees_destination,
+        royalties_percent,
+        royalties_destination
+    );
+
+    var new_sales_data = begin_cell()
+        .store_sales_data(sales_data)
+        .end_cell();
+
+    store_data(
+        metadata,
+        creator,
+        owner,
+        content,
+        new_sales_data
+    );
+
+    return ();
+}
+
+() handle_enable_selling(slice sender_address) impure {
+
+    (cell metadata, slice creator, slice owner, cell content, cell sales) = load_data();
+
+    var ds = sales.begin_parse();
+    (
+        int is_on_sale,
+        int is_last_bid_historical,
+        int last_bid_value,
+        slice last_bidder,
+        int fees_percent,
+        slice fees_destination,
+        int royalties_percent,
+        slice royalties_destination
+    ) = ds~load_sales_data();
+
+    ;; Throw if already on sale
+    throw_if(400, is_on_sale == 1);
+
+    (int owner_wc, int owner_address) = parse_std_addr(owner);
+    (int sender_wc, int sender_address) = parse_std_addr(sender_address);
+
+    ;; Throw if sender is not owner
+    throw_unless(400, owner_wc == sender_wc);
+    throw_unless(400, sender_address == owner_address);
+
+    var sales_data = (
+        1,                  ;; Set selling
+        1,                  ;; Set last bid as historical
+        last_bid_value,
+        last_bidder,
+        fees_percent,
+        fees_destination,
+        royalties_percent,
+        royalties_destination
+    );
+
+    var new_sales_data = begin_cell()
+        .store_sales_data(sales_data)
+        .end_cell();
+
+    store_data(
+        metadata,
+        creator,
+        owner,
+        content,
+        new_sales_data
+    );
+
+    return ();
+}
+
+() handle_disable_selling(slice sender_address) impure {
+
+    (cell metadata, slice creator, slice owner, cell content, cell sales) = load_data();
+
+    var ds = sales.begin_parse();
+    (
+        int is_on_sale,
+        int is_last_bid_historical,
+        int last_bid_value,
+        slice last_bidder,
+        int fees_percent,
+        slice fees_destination,
+        int royalties_percent,
+        slice royalties_destination
+    ) = ds~load_sales_data();
+
+    ;; Throw if already not on sale
+    throw_if(400, is_on_sale == 0);
+
+    (int owner_wc, int owner_address) = parse_std_addr(owner);
+    (int sender_wc, int sender_address) = parse_std_addr(sender_address);
+
+    ;; Throw if sender is not owner
+    throw_unless(400, owner_wc == sender_wc);
+    throw_unless(400, sender_address == owner_address);
+
+    ;; Return last bid value to bidder if bid is not historical
+    if (is_last_bid_historical == 0) {
+        var (wc, address) = last_bidder.parse_std_addr();
+        send_money(wc, address, last_bid_value);
+    }
+
+    var sales_data = (
+        0,                  ;; Set as not selling
+        1,                  ;; Set last bid as historical
+        last_bid_value,
+        last_bidder,
+        fees_percent,
+        fees_destination,
+        royalties_percent,
+        royalties_destination
+    );
+
+    var new_sales_data = begin_cell()
+        .store_sales_data(sales_data)
+        .end_cell();
+
+    store_data(
+        metadata,
+        creator,
+        owner,
+        content,
+        new_sales_data
+    );
+
+    return ();
+}
+
+() handle_accept_last_bid(slice sender_address) impure {
+    (cell metadata, slice creator, slice owner, cell content, cell sales) = load_data();
+
+    var ds = sales.begin_parse();
+    (
+        int is_on_sale,
+        int is_last_bid_historical,
+        int last_bid_value,
+        slice last_bidder,
+        int fees_percent,
+        slice fees_destination,
+        int royalties_percent,
+        slice royalties_destination
+    ) = ds~load_sales_data();
+
+    ;; Throw if not on sale
+    throw_if(400, is_on_sale == 0);
+
+    (int owner_wc, int owner_address) = parse_std_addr(owner);
+    (int sender_wc, int sender_address) = parse_std_addr(sender_address);
+
+    ;; Throw if sender is not owner
+    throw_unless(400, owner_wc == sender_wc);
+    throw_unless(400, sender_address == owner_address);
+
+    ;; Throw if last bid is historical
+    throw_if(400, is_last_bid_historical == 1);
+    ;; Throw if last bid is 0
+    throw_if(400, last_bid_value == 0);
+
+    int remaining = last_bid_value;
+
+    if (fees_percent > 0) {
+        ;; Rounding DOWN
+        int fees_value = (last_bid_value / 100) * fees_percent;
+
+        ;; Send fees
+        var (fd_wc, fd_address) = fees_destination.parse_std_addr();
+        send_money(fd_wc, fd_address, fees_value);
+
+        remaining = remaining - fees_value;
+    }
+    if (royalties_percent > 0) {
+        ;; Rounding DOWN
+        int royalties_value = (last_bid_value / 100) * royalties_percent;
+
+        ;; Send royalties
+        var (r_wc, r_address) = royalties_destination.parse_std_addr();
+        send_money(r_wc, r_address, royalties_value);
+
+        remaining = remaining - royalties_value;
+    }
+
+    ;; Send remaining value to previous owner
+    send_money(owner_wc, owner_address, remaining);
+
+    var sales_data = (
+        0,                  ;; Set as not selling
+        1,                  ;; Set last bid as historical
+        last_bid_value,
+        last_bidder,
+        fees_percent,
+        fees_destination,
+        royalties_percent,
+        royalties_destination
+    );
+
+    var new_sales_data = begin_cell()
+        .store_sales_data(sales_data)
+        .end_cell();
+
+    store_data(
+        metadata,
+        creator,
+        last_bidder,              ;; Set new owner
+        content,
+        new_sales_data
+    );
+
+    return ();
+}
+
+() recv_internal(int smc_balance, int msg_value, cell msg, slice msg_body) {
+    ;; ignore empty messages
+    if (msg_body.slice_empty?()) {
+        return ();
+    }
+
+    slice cs = msg.begin_parse();
+    int flags = cs~load_uint(4);
+
+    ;; ignore all bounced messages
+    if (flags & 1) {
+        return ();
+    }
+
+    slice sender_address = cs~load_msg_addr();
+    (int wc, int addr) = parse_std_addr(sender_address);
+
+    int op = msg_body~load_uint(32);
+
+    ;; Message with comment
+    if (op == 0) {
+        return handle_comment_message(msg_body, sender_address);
+    }
+
+    ;; Place a bid
+    if (op == 1) {
+        return handle_place_a_bid(sender_address, msg_value);
+    }
+
+    ;; Enable selling
+    if (op == 2) {
+        return handle_enable_selling(sender_address);
+    }
+
+    ;; Disable selling
+    if (op == 3) {
+        return handle_disable_selling(sender_address);
+    }
+
+    ;; Accept last bid
+    if (op == 4) {
+        return handle_accept_last_bid(sender_address);
+    }
+
+    throw(400);
+}
+
+() recv_external(slice in_msg) {
+    slice ds = get_data().begin_parse();
+
+    int inited = ds~load_uint(1);       ;; inited
+    var metadata = ds~load_ref();       ;; metadata cell
+    var creator = ds~load_msg_addr();   ;; creator
+    var owner = ds~load_msg_addr();     ;; owner
+    var content = ds~load_ref();        ;; content
+    var sales_cell = ds~load_ref();     ;; sales
+
+    ds.end_parse();
+    throw_if(400, inited);
+    accept_message();
+    var res = (metadata, creator, owner, content, sales_cell);
+    store_data(res);
+}
+
+;;
+;;  GET Methods
+;;
+
+;;
+;;
+;;  Returns basic NFT info in format:
+;;
+;;
+;;
+;;  :Metadata Cell:
+;;
+;;  uint10 name_len
+;;  name_len * bit name
+;;  uint10 symbol_len
+;;  symbol_len * bit symbol
+;;
+;;  :Result Cell:
+;;
+;;  metadata_cell metadata
+;;  addr_std$10 creator
+;;  addr_std$10 owner
+;;  cell content
+;;
+;;
+
+cell get_basic_nft_metadata() method_id {
+    (cell metadata, slice creator, slice owner, cell content, _) = load_data();
+
+    var res = begin_cell()
+        .store_ref(metadata)
+        .store_slice(creator)
+        .store_slice(owner)
+        .store_ref(content)
+        .end_cell();
+
+    return res;
+}
+
+;;
+;;
+;;  Returns NFT sales info in format:
+;;
+;;
+;;  :Metadata Cell:
+;;
+;;  uint1 is_on_sale
+;;  uint1 is_last_bid_historical
+;;  grams last_bid_value
+;;  addr_std$10 last_bidder
+;;  uint8 fees_percent
+;;  addr_std$10 fees_destination
+;;  uint8 royalties_percent
+;;  addr_std$10 royalties_destination
+;;
+;;
+
+cell get_nft_sales_data() method_id {
+    (_, _, _, _, cell sales) = load_data();
+    return sales;
+}
+
+
+cell get_name() method_id {
+	(cell metadata, _, _, _, _) = load_data();
+	var cs = metadata.begin_parse();
+	(cell name, _) = cs~load_metadata();
+	return name;
+}
+
+cell get_symbol() method_id {
+    (cell metadata, _, _, _, _) = load_data();
+    var cs = metadata.begin_parse();
+    (_, cell symbol) = cs~load_metadata();
+    return symbol;
+}
+
+(int, int) get_creator() method_id {
+     (_, slice creator, _, _, _) = load_data();
+     return creator.parse_std_addr();
+}
+
+(int, int) get_owner() method_id {
+     (_, _, slice owner, _, _) = load_data();
+     return owner.parse_std_addr();
+}
+
+cell get_content() method_id {
+     (_, _, _, cell content, _) = load_data();
+     return content;
+}
+
+
+;;
+;; Sales
+;;
+
+int is_on_sell() method_id {
+    (_, _, _, _, cell sales) = load_data();
+    var ds = sales.begin_parse();
+    (int is_on_sale, _, _, _, _, _, _, _) = ds~load_sales_data();
+
+    if (is_on_sale == 1) {
+        return true;
+    } else {
+        return false;
+    }
+}
+
+int is_last_bid_historical() method_id {
+    (_, _, _, _, cell sales) = load_data();
+    var ds = sales.begin_parse();
+    (_, int is_last_bid_historical, _, _, _, _, _, _) = ds~load_sales_data();
+
+    if (is_last_bid_historical == 1) {
+        return true;
+    } else {
+        return false;
+    }
+}
+
+int last_bid_value() method_id {
+    (_, _, _, _, cell sales) = load_data();
+    var ds = sales.begin_parse();
+    (_, _, int last_bid_value, _, _, _, _, _) = ds~load_sales_data();
+    return last_bid_value;
+}
+
+(int, int) last_bidder() method_id {
+    (_, _, _, _, cell sales) = load_data();
+    var ds = sales.begin_parse();
+    (_, _, _, slice last_bidder, _, _, _, _) = ds~load_sales_data();
+    return last_bidder.parse_std_addr();
+}
+
+int fees_percent() method_id {
+    (_, _, _, _, cell sales) = load_data();
+    var ds = sales.begin_parse();
+    (_, _, _, _, int fees_percent, _, _, _) = ds~load_sales_data();
+    return fees_percent;
+}
+
+(int, int) fees_destination() method_id {
+    (_, _, _, _, cell sales) = load_data();
+    var ds = sales.begin_parse();
+    (_, _, _, _, _, slice fees_destination, _, _) = ds~load_sales_data();
+    return fees_destination.parse_std_addr();
+}
+
+int royalties_percent() method_id {
+    (_, _, _, _, cell sales) = load_data();
+    var ds = sales.begin_parse();
+    (_, _, _, _, _, _, int royalties_percent, _) = ds~load_sales_data();
+    return royalties_percent;
+}
+
+(int, int) royalties_destination() method_id {
+    (_, _, _, _, cell sales) = load_data();
+    var ds = sales.begin_parse();
+    (_, _, _, _, _, _, _, slice royalties_destination) = ds~load_sales_data();
+    return royalties_destination.parse_std_addr();
+}
+
+;;
+;;  Introspection
+;;
+
+(int, int) supported_interfaces() method_id {
+    ;; 126808: BasicNFT
+    ;; 81264: BasicIntrospection
+    return (126808, 81264);
+}

@@ -1,0 +1,10 @@
+PROGRAM{
+  DECLPROC main
+  main PROC:<{
+    //
+    777 PUSHINT	//  _0=777
+    s0 DUMP	//  _1
+    DROP	//
+  }>
+}END>c
+

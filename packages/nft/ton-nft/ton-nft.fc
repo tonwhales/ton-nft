@@ -1,0 +1,237 @@
+;;
+;;  TON NFT Smart Contract
+;;
+
+
+
+;;
+;;
+;;  Storage
+;;
+;;  uint1 inited
+;;  cell name
+;;  cell symbol
+;;  addr_std$10 creator
+;;  addr_std$10 owner
+;;  cell content
+;;  uint32 seq
+;;
+;;
+
+_ load_data() impure {
+    slice ds = get_data().begin_parse();
+    int inited = ds~load_uint(1);     ;; inited
+    var res = (
+        ds~load_ref(),                ;; name
+        ds~load_ref(),                ;; symbol
+        ds~load_msg_addr(),           ;; creator
+        ds~load_msg_addr(),           ;; owner
+        ds~load_ref(),                ;; content
+        ds~load_uint(32)              ;; seq
+    );
+    ds.end_parse();
+    return res;
+}
+
+() store_data(var ds) impure {
+    (cell name, cell symbol, slice creator, slice owner, cell content, int seq) = ds;
+    set_data(
+        begin_cell()
+            .store_uint(1, 1)
+            .store_ref(name)
+            .store_ref(symbol)
+            .store_slice(creator)
+            .store_slice(owner)
+            .store_ref(content)
+            .store_uint(seq, 32)
+            .end_cell()
+    );
+}
+
+;;
+;; Serializes
+;; addr_std$10 anycast:(Maybe Anycast) workchain_id:int8 address:bits256 = MsgAddressInt;
+;; output is 267 bits
+;;
+slice pack_std_addr(int wc, int addr) {
+    return begin_cell()
+        .store_uint(2, 2)
+        .store_uint(0, 1)
+        .store_int(wc, 8)
+        .store_uint(addr, 256)
+        .end_cell()
+        .begin_parse();
+}
+
+(slice, (int)) ~load_decimal_symbol(slice source) {
+  int n = source~load_uint(8);
+  n = n - 48;
+  throw_unless(400, n >= 0);
+  throw_if(400, n > 9);
+  return (source, (n));
+}
+
+(slice, (int)) ~load_hex_symbol(slice source) {
+    int n = source~load_uint(8);
+    n = n - 48;
+    throw_unless(400, n >= 0);
+    if (n < 10) {
+        return (source, (n));
+    }
+    n = n - 7;
+    throw_unless(400, n >= 0);
+    if (n < 16) {
+        return (source, (n));
+    }
+    n = n - 32;
+    throw_unless(400, (n >= 0) & (n < 16));
+    return (source, (n));
+}
+
+(slice, (int, int)) ~parse_raw_text_address(slice source) {
+    int n = source~load_uint(8);
+    var is_negative = n == 0x2d; ;; minus sign
+
+    int wc = 0;
+
+    ;; Parse workchain id
+    while (source.preload_uint(8) != 0x3a) {
+        var next_decimal = source~load_decimal_symbol();
+
+        wc *= 10;
+        wc += next_decimal;
+    }
+
+    if (is_negative) {
+        wc *= -1;
+    }
+
+    ;; Handle : separator
+    var separator = source~load_uint(8);
+    throw_unless(400, separator == 0x3a);
+
+    ;; Parse address 64 bytes
+    int address = 0;
+    repeat (64) {
+        address = address * 16 + source~load_hex_symbol();
+    }
+
+    return (source, (wc, address));
+}
+
+() handle_comment_message (slice msg_body, slice sender_address) impure {
+    ;; For giftTo request one Cell is not enough
+    if (msg_body.slice_data_empty?() & (msg_body.slice_refs() == 1)) {
+      cell ref_msg = msg_body~load_ref();
+      msg_body = ref_msg.begin_parse();
+    }
+
+    ;; 'giftTo:'
+    int command = msg_body~load_uint(56);
+    throw_unless(400, command == 0x67696674546f3a);
+    var (int destination_wc, int destination_address) = msg_body~parse_raw_text_address();
+
+    (cell name, cell symbol, slice creator, slice owner, cell content, int seq) = load_data();
+
+    (int owner_wc, int owner_address) = parse_std_addr(owner);
+    (int sender_wc, int sender_address) = parse_std_addr(sender_address);
+
+    if (owner_wc != sender_wc) {
+        throw(400);
+    }
+    if (owner_address != sender_address) {
+        throw(400);
+    }
+
+    if ((owner_wc == destination_wc) & (owner_address == destination_address)) {
+        throw(400);
+    }
+
+    var new_owner_address = pack_std_addr(destination_wc, destination_address);
+    store_data((name, symbol, creator, new_owner_address, content, seq));
+}
+
+() recv_internal(int smc_balance, int msg_value, cell msg, slice msg_body) {
+    if (msg_body.slice_empty?()) {
+        ;; ignore empty messages
+        return ();
+    }
+
+    slice cs = msg.begin_parse();
+    int flags = cs~load_uint(4);
+
+    ;; ignore all bounced messages
+    if (flags & 1) {
+        return ();
+    }
+
+    slice sender_address = cs~load_msg_addr();
+    (int wc, int addr) = parse_std_addr(sender_address);
+
+    int op = msg_body~load_uint(32);
+
+    ;; Message with comment
+    if (op == 0) {
+        return handle_comment_message(msg_body, sender_address);
+    } else {
+        throw(400);
+    }
+}
+
+() recv_external(slice in_msg) {
+    slice ds = get_data().begin_parse();
+
+    int inited = ds~load_uint(1);     ;; inited
+    var name = ds~load_ref();   ;; name
+    var symbol = ds~load_ref(); ;; symbol
+    var creator = ds~load_msg_addr(); ;; creator
+    var owner = ds~load_msg_addr(); ;; owner
+    var content = ds~load_ref(); ;; content
+    var seq = ds~load_uint(32); ;; seq
+
+    ds.end_parse();
+    throw_if(400, inited);
+    accept_message();
+    var res = (name, symbol, creator, owner, content, seq);
+    store_data(res);
+}
+
+;;
+;;  GET Methods
+;;
+
+cell get_name() method_id {
+	(cell name, _, _, _, _, _) = load_data();
+	return name;
+}
+
+cell get_symbol() method_id {
+    (_, cell symbol, _, _, _, _) = load_data();
+    return symbol;
+}
+
+(int, int) get_creator() method_id {
+     (_, _, slice creator, _, _, _) = load_data();
+     return creator.parse_std_addr();
+}
+
+(int, int) get_owner() method_id {
+     (_, _, _, slice owner, _, _) = load_data();
+     return owner.parse_std_addr();
+}
+
+cell get_content() method_id {
+     (_, _, _, _, cell content, _) = load_data();
+     return content;
+}
+
+int seqno() method_id {
+     (_, _, _, _, _, int seq) = load_data();
+     return seq;
+}
+
+(int, int) supported_interfaces() method_id {
+    ;; 126808: BasicNFT
+    ;; 81264: BasicIntrospection
+    return (126808, 81264);
+}

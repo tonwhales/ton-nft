@@ -1,0 +1,27 @@
+"Asm.fif" include
+// automatically generated from `./func/stdlib.fc` `./hello-world.fn`
+PROGRAM{
+  DECLPROC main
+  main PROC:<{
+    //
+    3131746989 PUSHINT	//  _1=3131746989
+    s0 s0 PUSH2	//  _1=3131746989 _2=3131746989 _3=3131746989
+    NEWC	//  _1=3131746989 _2=3131746989 _3=3131746989 _4
+    32 STU	//  _1=3131746989 _2=3131746989 _6
+    32 STU	//  _1=3131746989 _8
+    32 STU	//  msg
+    DUP	//  msg msg
+    s0 DUMP	//  msg _11
+    DROP	//  msg
+    ENDC	//  _12
+  }>
+}END>c
+
+<s
+
+.s
+runvmdict                   // Run TVM
+drop                        // remove exit code
+.s                          // print stack
+boc>B "sample.boc" B>file   // convert cell to BoC & save to file
+.s                          // print stack

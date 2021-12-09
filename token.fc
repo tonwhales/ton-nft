@@ -1,0 +1,381 @@
+;; #!/usr/bin/func
+;;
+;; Copyright (c) 2019-2020 adoriasoft
+;; Andrey Lekar andrey_lekar@adoriasoft.com
+;; Alexey Pozhylenkov alex_pozhilenkov@adoriasoft.com
+;; Volodymyr Kostanda ceo@adoriasoft.com
+
+;; ---------------------------------- defines
+
+int ApiOps::None() inline                { return 0; }
+int ApiOps::Transfer() inline            { return 1; }
+int ApiOps::Approve() inline             { return 2; }
+int ApiOps::TransferFrom() inline        { return 3; }
+
+int Token::Ok() inline                   { return 0x80000000; }
+int Token::WrongSender() inline          { return 0x80000001; }
+int Token::WrongRecipient() inline       { return 0x80000002; }
+int Token::NoFunds() inline              { return 0x80000003; }
+int Token::NoAllowance() inline          { return 0x80000004; }
+int Token::NoOp() inline                 { return 0xFFFFFFFF; }
+
+;; ---------------------------------- state
+
+;; storage : {
+;;   uint1 inited,
+;;   cell name,
+;;   uint8 decimals,
+;;   cell symbol,
+;;   uint256 supply,
+;;   balances : {
+;;     slice address : uint256 amount
+;;   },
+;;   approvals : {
+;;     slice sender : {
+;;       slice spender: uint256 amount
+;;     } 
+;;   }
+
+;; ---------------------------------- pure functions
+
+;; create 264 bits slice from the (network, address) pair
+;; returns (slice address)
+slice pack_addr(int wc, int addr) {
+  return begin_cell().store_int(wc, 8).store_uint(addr, 256).end_cell().begin_parse();
+}
+
+;; decode TON standard address and pack to 264 bits slice
+;; returns (slice address)
+slice pack_addr_from_std(slice addr) {
+  (int addr_network, int addr_addr) = addr.parse_std_addr();
+  return pack_addr(addr_network, addr_addr);
+}
+
+;; update 'balances' in order to move 'amount' of tokens from 'from' to 'to'
+;; returns (cell balances, int result)
+(cell, int) spend_balances(cell balances, slice from, slice to, int amount) {
+  ;; look up for the sender address in the balances
+  (slice from_record, int from_found) = balances.dict_get?(264, from);
+  if (from_found == 0) {
+    return (balances, Token::WrongSender());
+  }
+
+  int from_balance = from_record~load_uint(256);
+
+  if (from_balance < amount) {
+    return (balances, Token::NoFunds());
+  }
+
+  from_balance = from_balance - amount;
+
+  (slice recipient_record, int recipient_found) = balances.dict_get?(264, to);
+
+  if (recipient_found) {
+    int recipient_balance = recipient_record~load_uint(256);
+    amount = amount + recipient_balance;
+  }
+
+  ;; update the sender and recipient balance
+  balances~dict_set_builder(264, from, begin_cell().store_uint(from_balance, 256));
+  balances~dict_set_builder(264, to, begin_cell().store_uint(amount, 256));
+  return (balances, Token::Ok());
+}
+
+;; set 'approvals' in order to allow 'spender' to spend 'amount' of tokens from 'from'
+;; returns (cell approvals, int result)
+(cell, int) set_approval(cell approvals, slice from, slice spender, int amount) {
+  ;; look up for the sender address in the approvals
+  cell from_record = approvals.dict_get_ref(264, from);
+  if (from_record.cell_null?()) {
+    from_record = new_dict();
+  }
+
+  ;; update the spender allowance
+  from_record~dict_set_builder(264, spender, begin_cell().store_uint(amount, 256));
+  approvals~dict_set_ref(264, from, from_record);
+  return (approvals, Token::Ok());
+}
+
+;; update 'approvals' in order to spend 'amount' of tokens from 'from' by the 'spender' 
+;; returns (cell approvals, int result)
+(cell, int) spend_approval(cell approvals, slice from, slice spender, int amount) {
+  ;; look up for the sender address in the approvals
+  cell from_record = approvals.dict_get_ref(264, from);
+  if (from_record.cell_null?()) {
+    return (approvals, Token::WrongSender());
+  }
+
+  (slice spender_record, int spender_found) = from_record.dict_get?(264, spender);
+  if (spender_found == 0) {
+    return (approvals, Token::NoAllowance());
+  }
+
+  int spender_allowed = spender_record~load_uint(256);
+
+  if (spender_allowed < amount) {
+    return (approvals, Token::NoAllowance());
+  }
+
+  ;; update the spender allowance
+  spender_allowed = spender_allowed - amount;
+  from_record~dict_set_builder(264, spender, begin_cell().store_uint(spender_allowed, 256));
+  approvals~dict_set_ref(264, from, from_record);
+  return (approvals, Token::Ok());
+}
+
+;; ---------------------------------- impure functions
+
+;; send message to another account
+() send_message(slice addr, int tag, int query_id, int body, int grams, int mode) impure {
+	;; int_msg_info$0 ihr_disabled:Bool bounce:Bool bounced:Bool 
+	;;                src:MsgAddress -> 011000 0x18
+	builder msg = begin_cell()
+		.store_uint (0x18, 6)
+		.store_slice(addr)
+		.store_grams(grams)
+		.store_uint(0, 1 + 4 + 4 + 64 + 32 + 1 + 1)
+		.store_uint(tag, 32)
+		.store_uint(query_id, 64);
+	if (body >= 0) {
+		msg~store_uint(body, 32);
+	}
+	send_raw_message(msg.end_cell(), mode);
+}
+
+;; save data in the contract storage
+() store_data(var ds) impure {
+  (cell name, int decimals, cell symbol, int supply, cell balances, cell approvals) = ds;
+  set_data(
+    begin_cell()
+    .store_uint(1, 1)
+    .store_ref(name)
+    .store_uint(decimals, 8)
+    .store_ref(symbol)
+    .store_uint(supply, 256)
+    .store_dict(balances)
+    .store_dict(approvals)
+    .end_cell());
+}
+
+;; load data from the contract storage
+_ load_data() impure {
+  slice ds = get_data().begin_parse();
+  int inited = ds~load_uint(1);   ;; inited state
+  var res = (
+    ds~load_ref(),                ;; token name
+    ds~load_uint(8),              ;; decimals
+    ds~load_ref(),                ;; token symbol
+    ds~load_uint(256),            ;; token supply
+    ds~load_dict(),               ;; balances dictionary (owner -> balance)
+    ds~load_dict()                ;; approvals dictionary (owner -> { spender -> approved })
+  );
+  ds.end_parse();
+  return res;
+}
+
+;; send response for the transfer API call
+() transferResponse(slice to, int query_id, int response) impure {
+  return send_message(to, response, query_id, ApiOps::Transfer(), 0, 64);
+}
+
+;; send 'amount' tokens to the 'recipient'
+() transfer(slice from, int query_id, int amount, slice recipient_addr) impure {
+  var ds = load_data();
+  (cell name, int decimals, cell symbol, int supply, cell balances, cell approvals) = ds;
+  slice from_addr = pack_addr_from_std(from);
+
+  (balances, int result) = spend_balances(balances, from_addr, recipient_addr, amount);
+
+  if (result != Token::Ok()) {
+    return transferResponse(from, query_id, result);
+  }
+
+  ds = (name, decimals, symbol, supply, balances, approvals);
+  store_data(ds);
+  return transferResponse(from, query_id, Token::Ok());
+}
+
+;; send response for the approve API call
+() approveResponse(slice to, int query_id, int response) impure {
+  return send_message(to, response, query_id, ApiOps::Approve(), 0, 64);
+}
+
+;; allow 'spender' to spend 'amount' tokens from the sender 'from' address
+() approve(slice from, int query_id, int amount, slice spender_addr) impure {
+  var ds = load_data();
+  (cell name, int decimals, cell symbol, int supply, cell balances, cell approvals) = ds;
+  slice from_addr = pack_addr_from_std(from);
+
+  (approvals, int result) = set_approval(approvals, from_addr, spender_addr, amount);
+
+  if (result != Token::Ok()) {
+    return approveResponse(from, query_id, result);
+  }
+
+  ;; update approvals info
+  ds = (name, decimals, symbol, supply, balances, approvals);
+  store_data(ds);
+  return approveResponse(from, query_id, Token::Ok());
+}
+
+;; send response for the transferFrom API call
+() transferFromResponse(slice to, int query_id, int response) impure {
+  return send_message(to, response, query_id, ApiOps::TransferFrom(), 0, 64);
+}
+
+;; send 'amount' of approved tokens to the 'recipient' to the spender 'from' address from the
+;; 'owner' address
+() transferFrom(slice from, int query_id, int amount, slice owner_addr, slice recipient_addr) impure {
+  var ds = load_data();
+  (cell name, int decimals, cell symbol, int supply, cell balances, cell approvals) = ds;
+  slice from_addr = pack_addr_from_std(from);
+
+  (approvals, int result) = spend_approval(approvals, owner_addr, from_addr, amount);
+
+  if (result != Token::Ok()) {
+    return transferFromResponse(from, query_id, result);
+  }
+
+  (balances, int result) = spend_balances(balances, owner_addr, recipient_addr, amount);
+
+  if (result != Token::Ok()) {
+    return transferFromResponse(from, query_id, result);
+  }
+
+  ;; update approvals info
+  ds = (name, decimals, symbol, supply, balances, approvals);
+  store_data(ds);
+  return transferFromResponse(from, query_id, Token::Ok());
+}
+
+;; ---------------------------------- message handlers
+
+() recv_internal(int msg_value, cell in_msg_cell, slice in_msg) impure {
+  if (in_msg.slice_empty?()) {
+    ;; inbound message has empty body
+    return ();
+  }
+
+  slice cs = in_msg_cell.begin_parse();
+  int flags = cs~load_uint(4);
+
+  ;; ignore all bounced messages
+  ;; int_msg_info$0 ihr_disabled:Bool bounce:Bool bounced:Bool
+  if (flags & 1) {
+    return ();
+  }
+
+  int op = in_msg~load_uint(32);
+
+  ;; simple transfer with comment
+  if (op == ApiOps::None()) {
+    return();
+  }
+
+  int query_id = in_msg~load_uint(64);
+
+  slice sender = cs~load_msg_addr();
+
+  ;; token transfer
+  ;; args (uint256 amount, int8 recipient_network, uint256 recipient_address)
+  if (op == ApiOps::Transfer()) {
+    int amount = in_msg~load_uint(256);
+    slice recipient_address = in_msg~load_bits(264);
+    return transfer(sender, query_id, amount, recipient_address);
+  }
+
+  ;; Token approvals may be attacked as described here: https://docs.google.com/document/d/1YLPtQxZu1UAvO9cZ1O2RPXBbT0mooh4DYKjA_jp-RLM/edit
+  ;; This issue should be mitigated with proper contract usage:
+  ;; - get user balance before approving
+  ;; - approve user with 0 value (reset approval)
+  ;; - get user balance again - it should not change
+  ;; - if balance was changed - transfer should be terminated - you've been attacked
+  ;; - approve user to transfer
+
+  ;; approve
+  ;; args (uint256 amount, int8 spender_network, uint256 spender_address)
+  if (op == ApiOps::Approve()) {
+    int amount = in_msg~load_uint(256);
+    slice spender_address = in_msg~load_bits(264);
+    return approve(sender, query_id, amount, spender_address);
+  }
+
+  ;; transfer on behalf of spender
+  ;; args (uint256 amount, int8 from_network, uint256 from_address, int8 to_network, uint256 to_address)
+  if (op == ApiOps::TransferFrom()) {
+    int amount = in_msg~load_uint(256);
+    slice from_address = in_msg~load_bits(264);
+    slice to_address = in_msg~load_bits(264);
+    return transferFrom(sender, query_id, amount, from_address, to_address);
+  }
+
+  return send_message(sender, Token::NoOp(), query_id, 0, 0, 64);
+}
+
+() recv_external(slice in_msg) impure {
+  slice ds = get_data().begin_parse();
+  int inited = ds~load_uint(1);
+  cell name = ds~load_ref();
+  int decimals = ds~load_uint(8);
+  cell symbol = ds~load_ref();
+  int supply = ds~load_uint(256);
+  cell balances = ds~load_dict();
+  cell approvals = ds~load_dict();
+  ds.end_parse();
+  throw_if(33, inited);
+  accept_message();
+
+  var res = (name, decimals, symbol, supply, balances, approvals);
+  store_data(res);
+}
+
+;; ---------------------------------- getters
+
+;; get token name
+slice getname() method_id {
+	(cell name, _, _, _, _, _) = load_data();
+	return name.begin_parse();
+}
+
+;; get token decimals
+int getdecimals() method_id {
+  (_, int decimals, _, _, _, _) = load_data();
+	return decimals;
+}
+
+;; get token symbol
+slice getsymbol() method_id {
+	(_, _, cell symbol, _, _, _) = load_data();
+	return symbol.begin_parse();
+}
+
+;; get token supply
+int getsupply() method_id {
+	(_, _, _, int supply, _, _) = load_data();
+	return supply;
+}
+
+;; get balances dictionary (owner -> balance)
+cell getbalances() method_id {
+	(_, _, _, _, cell balances, _) = load_data();
+	return balances;
+}
+
+;; get approvals dictionary (owner -> { sender -> approved })
+cell getapprovals() method_id {
+	(_, _, _, _, _, cell approvals) = load_data();
+	return approvals;
+}
+
+;; get balance
+int getbalance(int from_network, int from_address) method_id {
+	(_, _, _, _, cell balances, _) = load_data();
+  slice from_address_full = pack_addr(from_network, from_address);
+  (slice sender_record, int sender_found) = balances.dict_get?(264, from_address_full);
+  if (sender_found == 0) {
+    return 0;
+  }
+
+  int sender_balance = sender_record~load_uint(256);
+	return sender_balance;
+}

@@ -1,0 +1,71 @@
+TON Smart Contracts
+
+Receiving internal messages
+
+When internal message is received by smart contract function recv_internal (id=0) is called
+Signature:
+
+() recv_internal(int smc_balance, int msg_value, cell msg, slice msg_body)
+
+Where:
+
+smc_balance - balance of smart contract after crediting the value of the inbound message in nanograms
+msg_value   - balance of the message in nanograms
+msg         - serialized message cell
+msg_body    - message body
+
+
+SMC Introspection
+
+Highly inspired by
+https://eips.ethereum.org/EIPS/eip-165
+
+In order to support Introspection SMC should implement supports_interface method:
+(int) supports_interface(int interface)
+
+Which returns true if interface supported.
+
+Interfaces are represented by bitwise XOR of function selectors of interface.
+Function selectors:
+
+For GET methods
+selector = (crc16(<function_name>) & 0xffff) | 0x10000
+(same is used in FunC)
+
+For internal message queries
+selector = (crc16(<function_formal_definition>) & 0xffff) | 0x10000
+
+Where function_formal_definition is some sort of definition of query e.g. TL or TL-B
+
+Any Smart Contract supporting introspection should also return true when checked for support of supports_interface method
+
+
+1 owner mints token
+2 now only owner Wallet can control the token
+3 owner calls approve() with address of markeplace
+4 now marketplace can check approval & allow bids on this item
+5 when bid is approved marketplace transfers token to new owner & collects fees
+
+
+
+() send_money(int wc, int addr, int amount) impure {
+  send_raw_message(begin_cell()
+    .store_uint(0xc4, 9)
+    .store_int(wc, 8)
+    .store_uint(addr, 256)
+    .store_grams(amount)
+    .store_uint(0, 1 + 4 + 4 + 64 + 32 + 1 + 1)
+    .store_uint(0, 32) ;; Simple money transfer
+  .end_cell(), 3);
+}
+
+
+
+run_smc_method
+Runs vm locally
+
+We should run vm locally and transform stack to JSON.
+This should be native Node.JS addon?
+Also we should parse method arguments from JSON
+C7 context also should be JSON
+
