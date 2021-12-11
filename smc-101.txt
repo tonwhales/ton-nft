@@ -40,32 +40,3 @@ Where function_formal_definition is some sort of definition of query e.g. TL or 
 Any Smart Contract supporting introspection should also return true when checked for support of supports_interface method
 
 
-1 owner mints token
-2 now only owner Wallet can control the token
-3 owner calls approve() with address of markeplace
-4 now marketplace can check approval & allow bids on this item
-5 when bid is approved marketplace transfers token to new owner & collects fees
-
-
-
-() send_money(int wc, int addr, int amount) impure {
-  send_raw_message(begin_cell()
-    .store_uint(0xc4, 9)
-    .store_int(wc, 8)
-    .store_uint(addr, 256)
-    .store_grams(amount)
-    .store_uint(0, 1 + 4 + 4 + 64 + 32 + 1 + 1)
-    .store_uint(0, 32) ;; Simple money transfer
-  .end_cell(), 3);
-}
-
-
-
-run_smc_method
-Runs vm locally
-
-We should run vm locally and transform stack to JSON.
-This should be native Node.JS addon?
-Also we should parse method arguments from JSON
-C7 context also should be JSON
-

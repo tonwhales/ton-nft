@@ -24,30 +24,41 @@ When new bid (with higher value than previous one) is placed then value of previ
 
 ## GET methods
 
-```int supports_interface(int interface)```
+```cell get_nft_basic_info()```
 
-Checks whether interface with specific id is supported by this contract
-
-```cell get_content()```
-
-Returns the content of NFT (in most cases it's a url to JSON with metadata in IPFS, metadata format will be described later)
-
-```(int, int) get_owner()```
-
-Returns current owner address (workchain_id, address)
-
-```(int, int) get_creator()```
-
-Returns creator address (workchain_id, address)
-
-```cell get_symbol()```
-
-Returns symbol of NFT
+Returns basic nft information in format:
 
 
-```cell get_name()```
+Metadata Cell
 
-Returns name of NFT
+- uint10 name_len
+- name_len * bit name
+- uint10 symbol_len
+- symbol_len * bit symbol
+
+
+Result Cell
+
+- metadata_cell metadata
+- addr_std$10 creator
+- addr_std$10 owner
+- cell content
+
+```cell get_nft_sales_info()```
+
+Returns nft sales information in format:
+
+Metadata Cell
+
+- uint1 is_on_sale
+- uint1 is_last_bid_historical
+- grams last_bid_value
+- addr_std$10 last_bidder
+- uint8 fees_percent
+- addr_std$10 fees_destination
+- uint8 royalties_percent
+- addr_std$10 royalties_destination
+
 
 ## Internal messages
 

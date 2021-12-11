@@ -3,6 +3,8 @@
 ;;
 
 
+;; sender_address, query_id, op, msg_value
+global (slice, int, int, int) query_info;
 
 ;;
 ;;
@@ -38,28 +40,6 @@
 ;;
 ;;
 
-(slice, (cell, cell)) ~load_metadata(slice cs) inline {
-
-    var name_len = cs~load_uint(10);
-    var name_bits = cs~load_bits(name_len * 8);
-
-    var symbol_len = cs~load_uint(10);
-    var symbol_bits = cs~load_bits(symbol_len * 8);
-
-    var name = begin_cell().store_slice(name_bits).end_cell();
-    var symbol = begin_cell().store_slice(symbol_bits).end_cell();
-
-    return (cs, (name, symbol));
-}
-
-;; int is_on_sale
-;; int is_last_bid_historical
-;; int last_bid_value
-;; slice last_bidder_address
-;; int fees_percent
-;; slice fees_destination_address
-;; int royalties_percent
-;; slice royalties_destination_address
 
 (slice, (int, int, int, slice, int, slice, int, slice)) ~load_sales_data(slice ds) inline {
 
@@ -147,25 +127,25 @@ slice pack_std_addr(int wc, int addr) {
 (slice, (int)) ~load_decimal_symbol(slice source) {
   int n = source~load_uint(8);
   n = n - 48;
-  throw_unless(400, n >= 0);
-  throw_if(400, n > 9);
+  throw_unless(9, n >= 0);
+  throw_if(9, n > 9);
   return (source, (n));
 }
 
 (slice, (int)) ~load_hex_symbol(slice source) {
     int n = source~load_uint(8);
     n = n - 48;
-    throw_unless(400, n >= 0);
+    throw_unless(9, n >= 0);
     if (n < 10) {
         return (source, (n));
     }
     n = n - 7;
-    throw_unless(400, n >= 0);
+    throw_unless(9, n >= 0);
     if (n < 16) {
         return (source, (n));
     }
     n = n - 32;
-    throw_unless(400, (n >= 0) & (n < 16));
+    throw_unless(9, (n >= 0) & (n < 16));
     return (source, (n));
 }
 
@@ -189,7 +169,7 @@ slice pack_std_addr(int wc, int addr) {
 
     ;; Handle : separator
     var separator = source~load_uint(8);
-    throw_unless(400, separator == 0x3a);
+    throw_unless(9, separator == 0x3a);
 
     ;; Parse address 64 bytes
     int address = 0;
@@ -198,38 +178,6 @@ slice pack_std_addr(int wc, int addr) {
     }
 
     return (source, (wc, address));
-}
-
-() handle_comment_message (slice msg_body, slice sender_address) impure {
-    ;; For giftTo request one Cell is not enough
-    if (msg_body.slice_data_empty?() & (msg_body.slice_refs() == 1)) {
-      cell ref_msg = msg_body~load_ref();
-      msg_body = ref_msg.begin_parse();
-    }
-
-    ;; 'giftTo:'
-    int command = msg_body~load_uint(56);
-    throw_unless(400, command == 0x67696674546f3a);
-    var (int destination_wc, int destination_address) = msg_body~parse_raw_text_address();
-
-    (cell metadata, slice creator, slice owner, cell content, cell sales) = load_data();
-
-    (int owner_wc, int owner_address) = parse_std_addr(owner);
-    (int sender_wc, int sender_address) = parse_std_addr(sender_address);
-
-    if (owner_wc != sender_wc) {
-        throw(400);
-    }
-    if (owner_address != sender_address) {
-        throw(400);
-    }
-
-    if ((owner_wc == destination_wc) & (owner_address == destination_address)) {
-        throw(400);
-    }
-
-    var new_owner_address = pack_std_addr(destination_wc, destination_address);
-    store_data((metadata, creator, new_owner_address, content, sales));
 }
 
 () send_money(int wc, int addr, int amount) impure {
@@ -246,11 +194,62 @@ slice pack_std_addr(int wc, int addr) {
     );
 }
 
-() handle_place_a_bid(slice sender_address, int msg_value) impure {
+() send_response(slice addr, int tag, int query_id, int body, int grams, int mode) impure {
+    var msg = begin_cell()
+        .store_uint (0x18, 6)
+        .store_slice(addr)
+        .store_grams(grams)
+        .store_uint (0, 1 + 4 + 4 + 64 + 32 + 1 + 1)
+        .store_uint (tag, 32)
+        .store_uint (query_id, 64);
+    if (body >= 0) {
+        msg~store_uint(body, 32);
+    }
+    send_raw_message(msg.end_cell(), mode);
+}
+
+() send_error(int error_code) impure {
+    var (addr, query_id, op, _) = query_info;
+    return send_response(addr, error_code, query_id, op, 0, 64);
+}
+
+() send_ok(int price) impure {
+    var (addr, query_id, op, _) = query_info;
+    if (price == 0) {
+        return send_response(addr, 0xef6b6179, query_id, op, 0, 64);
+    }
+
+    raw_reserve(price, 4);
+    return send_response(addr, 0xef6b6179, query_id, op, 0, 128);
+}
+
+() handle_gift(int destination_wc, int destination_address) impure {
+
+    (slice sender, _, _, _) = query_info;
+
+    (cell metadata, slice creator, slice owner, cell content, cell sales) = load_data();
+
+    (int owner_wc, int owner_address) = parse_std_addr(owner);
+    (int sender_wc, int sender_address) = parse_std_addr(sender);
+
+    ;; Check that sender is owner
+    throw_unless(400, (owner_wc == sender_wc) & (owner_address == sender_address));
+
+    ;; Throw if trying to gift yourself
+    throw_if(400, (owner_wc == destination_wc) & (owner_address == destination_address));
+
+    var new_owner_address = pack_std_addr(destination_wc, destination_address);
+    store_data((metadata, creator, new_owner_address, content, sales));    
+}
+
+() handle_place_a_bid() impure {
+
+    (slice sender_address, _, _, int msg_value) = query_info;
 
     (cell metadata, slice creator, slice owner, cell content, cell sales) = load_data();
 
     var ds = sales.begin_parse();
+
     (
         int is_on_sale, 
         int is_last_bid_historical,
@@ -317,7 +316,9 @@ slice pack_std_addr(int wc, int addr) {
     return ();
 }
 
-() handle_enable_selling(slice sender_address) impure {
+() handle_enable_selling() impure {
+
+    (slice sender_address, _, _, _) = query_info;
 
     (cell metadata, slice creator, slice owner, cell content, cell sales) = load_data();
 
@@ -340,8 +341,7 @@ slice pack_std_addr(int wc, int addr) {
     (int sender_wc, int sender_address) = parse_std_addr(sender_address);
 
     ;; Throw if sender is not owner
-    throw_unless(400, owner_wc == sender_wc);
-    throw_unless(400, sender_address == owner_address);
+    throw_unless(400, (owner_wc == sender_wc) & (sender_address == owner_address));
 
     var sales_data = (
         1,                  ;; Set selling
@@ -366,10 +366,13 @@ slice pack_std_addr(int wc, int addr) {
         new_sales_data
     );
     
-    return ();
+    ;; Send ok response
+    send_ok(0);
 }
 
-() handle_disable_selling(slice sender_address) impure {
+() handle_disable_selling() impure {
+
+    (slice sender_address, _, _, _) = query_info;
 
     (cell metadata, slice creator, slice owner, cell content, cell sales) = load_data();
 
@@ -391,9 +394,8 @@ slice pack_std_addr(int wc, int addr) {
     (int owner_wc, int owner_address) = parse_std_addr(owner);
     (int sender_wc, int sender_address) = parse_std_addr(sender_address);
 
-    ;; Throw if sender is not owner
-    throw_unless(400, owner_wc == sender_wc);
-    throw_unless(400, sender_address == owner_address);
+   ;; Throw if sender is not owner
+    throw_unless(400, (owner_wc == sender_wc) & (sender_address == owner_address));
 
     ;; Return last bid value to bidder if bid is not historical
     if (is_last_bid_historical == 0) {
@@ -424,10 +426,14 @@ slice pack_std_addr(int wc, int addr) {
         new_sales_data
     );
     
-    return ();
+    ;; Send ok response
+    send_ok(0);
 }
 
-() handle_accept_last_bid(slice sender_address) impure {
+() handle_accept_last_bid() impure {
+
+    (slice sender_address, _, _, _) = query_info;
+
     (cell metadata, slice creator, slice owner, cell content, cell sales) = load_data();
 
     var ds = sales.begin_parse();
@@ -509,6 +515,51 @@ slice pack_std_addr(int wc, int addr) {
     return ();
 }
 
+() handle_comment_message (slice msg_body) impure {
+    ;; (slice sender_address, _, _, _) = query_info;
+
+    ;; For giftTo request one Cell is not enough
+    if (msg_body.slice_data_empty?() & (msg_body.slice_refs() == 1)) {
+      cell ref_msg = msg_body~load_ref();
+      msg_body = ref_msg.begin_parse();
+    }
+
+    int command = msg_body~load_uint(32);
+
+    ;; 'gift'
+    if (command == 0x67696674) {
+        ;; 'To:'
+        throw_if(400, msg_body~load_uint(24) != 0x546f3a);
+        
+        (int dest_wc, int dest_addr) = msg_body~parse_raw_text_address();
+
+        return handle_gift(dest_wc, dest_addr);
+    }
+
+    ;; 'pbid'
+    if (command == 0x70626964) {
+        return handle_place_a_bid();
+    }
+
+    ;; 'sel+'
+    if (command == 0x73656c2b) {
+        return handle_enable_selling();
+    }   
+    
+    ;; 'sel-'
+    if (command == 0x73656c2d) {
+        return handle_disable_selling();
+    }
+
+    ;; 'acpt'
+    if (command == 0x61637074) {
+        return handle_accept_last_bid();
+    }
+
+    ;; Unknown operation
+    throw(400);
+}
+
 () recv_internal(int smc_balance, int msg_value, cell msg, slice msg_body) {
     ;; ignore empty messages
     if (msg_body.slice_empty?()) {
@@ -524,33 +575,43 @@ slice pack_std_addr(int wc, int addr) {
     }
 
     slice sender_address = cs~load_msg_addr();
-    (int wc, int addr) = parse_std_addr(sender_address);
 
+    ;; (int wc, int addr) = parse_std_addr(sender_address);
+
+    int query_id = 0;   
     int op = msg_body~load_uint(32);
+
+    query_info = (sender_address, query_id, op, msg_value);
+
 
     ;; Message with comment
     if (op == 0) {
-        return handle_comment_message(msg_body, sender_address);
+        return handle_comment_message(msg_body);
+    }
+
+    if (msg_body.slice_bits() >= 64) { 
+        query_id = msg_body~load_uint(64);
+        query_info = (sender_address, query_id, op, msg_value);
     }
 
     ;; Place a bid
     if (op == 1) {
-        return handle_place_a_bid(sender_address, msg_value);
+        return handle_place_a_bid();
     }
 
     ;; Enable selling
     if (op == 2) {
-        return handle_enable_selling(sender_address);
+        return handle_enable_selling();
     }
 
     ;; Disable selling
     if (op == 3) {
-        return handle_disable_selling(sender_address);
+        return handle_disable_selling();
     }
 
     ;; Accept last bid
     if (op == 4) {
-        return handle_accept_last_bid(sender_address);
+        return handle_accept_last_bid();
     }
 
     throw(400);
@@ -567,7 +628,7 @@ slice pack_std_addr(int wc, int addr) {
     var sales_cell = ds~load_ref();     ;; sales
 
     ds.end_parse();
-    throw_if(400, inited);
+    throw_if(9, inited);
     accept_message();
     var res = (metadata, creator, owner, content, sales_cell);
     store_data(res);
@@ -599,7 +660,7 @@ slice pack_std_addr(int wc, int addr) {
 ;;
 ;;
         
-cell get_basic_nft_metadata() method_id {
+cell get_nft_basic_info() method_id {
     (cell metadata, slice creator, slice owner, cell content, _) = load_data();
 
     var res = begin_cell()
@@ -630,110 +691,9 @@ cell get_basic_nft_metadata() method_id {
 ;;
 ;;
 
-cell get_nft_sales_data() method_id {
+cell get_nft_sales_info() method_id {
     (_, _, _, _, cell sales) = load_data();
     return sales;
-}
-
-
-cell get_name() method_id {
-	(cell metadata, _, _, _, _) = load_data();
-	var cs = metadata.begin_parse();
-	(cell name, _) = cs~load_metadata();
-	return name;
-}
-
-cell get_symbol() method_id {
-    (cell metadata, _, _, _, _) = load_data();
-    var cs = metadata.begin_parse();
-    (_, cell symbol) = cs~load_metadata();
-    return symbol;
-}
-
-(int, int) get_creator() method_id {
-     (_, slice creator, _, _, _) = load_data();
-     return creator.parse_std_addr();
-}
-
-(int, int) get_owner() method_id {
-     (_, _, slice owner, _, _) = load_data();
-     return owner.parse_std_addr();
-}
-
-cell get_content() method_id {
-     (_, _, _, cell content, _) = load_data();
-     return content;
-}
-
-
-;;
-;; Sales
-;;
-
-int is_on_sell() method_id {
-    (_, _, _, _, cell sales) = load_data();
-    var ds = sales.begin_parse();
-    (int is_on_sale, _, _, _, _, _, _, _) = ds~load_sales_data();
-
-    if (is_on_sale == 1) {
-        return true;
-    } else {
-        return false;
-    }
-}
-
-int is_last_bid_historical() method_id {
-    (_, _, _, _, cell sales) = load_data();
-    var ds = sales.begin_parse();
-    (_, int is_last_bid_historical, _, _, _, _, _, _) = ds~load_sales_data();
-
-    if (is_last_bid_historical == 1) {
-        return true;
-    } else {
-        return false;
-    }    
-}
-
-int last_bid_value() method_id {
-    (_, _, _, _, cell sales) = load_data();
-    var ds = sales.begin_parse();
-    (_, _, int last_bid_value, _, _, _, _, _) = ds~load_sales_data();
-    return last_bid_value;
-}
-
-(int, int) last_bidder() method_id {
-    (_, _, _, _, cell sales) = load_data();
-    var ds = sales.begin_parse();
-    (_, _, _, slice last_bidder, _, _, _, _) = ds~load_sales_data();
-    return last_bidder.parse_std_addr();
-}
-
-int fees_percent() method_id {
-    (_, _, _, _, cell sales) = load_data();
-    var ds = sales.begin_parse();
-    (_, _, _, _, int fees_percent, _, _, _) = ds~load_sales_data();
-    return fees_percent;
-}
-
-(int, int) fees_destination() method_id {
-    (_, _, _, _, cell sales) = load_data();
-    var ds = sales.begin_parse();
-    (_, _, _, _, _, slice fees_destination, _, _) = ds~load_sales_data();
-    return fees_destination.parse_std_addr();
-}
-
-int royalties_percent() method_id {
-    (_, _, _, _, cell sales) = load_data();
-    var ds = sales.begin_parse();
-    (_, _, _, _, _, _, int royalties_percent, _) = ds~load_sales_data();
-    return royalties_percent;  
-}
-
-(int, int) royalties_destination() method_id {
-    (_, _, _, _, cell sales) = load_data();
-    var ds = sales.begin_parse();
-    (_, _, _, _, _, _, _, slice royalties_destination) = ds~load_sales_data();
-    return royalties_destination.parse_std_addr();
 }
 
 ;;

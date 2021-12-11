@@ -1,18 +1,15 @@
 import {
     Address,
     Cell,
-    CellMessage,
+    CellMessage, CommentMessage,
     ExternalMessage,
     InternalMessage,
-    RawCommonMessageInfo,
-    RawCurrencyCollection, RawMessage, RawStateInit,
     Slice
 } from "ton";
 import {SmartContract} from "../../contract-executor/SmartContract";
 import {readFile} from "fs/promises";
 import BN from "bn.js";
-import {parseActionsList, SendMsgOutAction} from "../../utils/parseActionsList";
-import {readMessage} from "../../utils/messageUtils";
+import {OutAction, parseActionsList, SendMsgOutAction} from "../../utils/parseActionsList";
 
 const stringToCell = (str: string) => {
     let cell = new Cell()
@@ -20,11 +17,13 @@ const stringToCell = (str: string) => {
     return cell
 }
 
+const contractAddress = Address.parseFriendly('Ef-KJp9REa0zDgaM6f3JW--e9gKDg1_udGBtzUVtTahmoY3t').address
 const ownerAndCreator = Address.parseFriendly('EQD4FPq-PRDieyQKkizFTRtSDyucUIqrj0v_zXJmqaDp6_0t').address
 const feesDestination = Address.parseFriendly('EQC6Nlpu1tNo-CsptnBN98xJw7IzGzY_Utqo6Sbfc8uNVKwt').address
 const royaltiesDestination = Address.parseFriendly('EQCD39VS5jcptHL8vMjEXrzGaRcCVYto7HUn4bpAOg8xqB2N').address
-const ZERO_ADDRESS = new Address(-1, Buffer.alloc(256/8))
 const bidderAddress = Address.parseFriendly('Ef_mlXHnufWO3-vvopflR_NpIFMiidvp_xt20Qf8usMBBKzB').address
+const ZERO_ADDRESS = new Address(-1, Buffer.alloc(256 / 8))
+
 const ONE_TON = 1_000_000_000
 
 type NftConfig = {
@@ -161,6 +160,19 @@ const DefaultNftConfig: NftConfig = {
 const TVM_TRUE = new BN(-1)
 const TVM_FALSE = new BN(0)
 
+async function getBasicNftMetadata(contract: SmartContract) {
+    let res = await contract.invokeGetMethod('get_nft_basic_info', [])
+    expect(res.result[0]).toBeInstanceOf(Cell)
+    return parseBasicNftMetadataResponse(res.result[0] as Cell)
+}
+
+async function getBasicNftSalesInfo(contract: SmartContract) {
+    let res = await contract.invokeGetMethod('get_nft_sales_info', [])
+    expect(res.result[0]).toBeInstanceOf(Cell)
+    return parseSalesInfoResponse(res.result[0] as Cell)
+}
+
+
 
 type NormalizedStackEntry =
     | null
@@ -180,6 +192,16 @@ function testAddress(res: NormalizedStackEntry[], exceptedAddress: Address) {
     expect(address.eq(new BN(exceptedAddress.hash))).toBe(true)
 }
 
+function testOkResponse(res: OutAction, exceptedAddress: Address) {
+    expect(res.type).toEqual('send_msg')
+    if (res.type !== 'send_msg') {
+        return
+    }
+    expect(res.message.info.dest!.toFriendly()).toEqual(exceptedAddress.toFriendly())
+    let slice = Slice.fromCell(res.message.body)
+    expect(slice.readUint(32).toNumber()).toEqual(0xef6b6179)
+}
+
 describe('TON Sellable NFT', () => {
     let source: string
 
@@ -187,9 +209,9 @@ describe('TON Sellable NFT', () => {
         source = (await readFile('/Users/altox/Desktop/ton-dev/packages/nft/ton-nft/ton-nft-sellable.fc')).toString('utf-8')
     })
 
-    it('should return basic nft metadata', async ()  => {
+    it('should return basic nft metadata', async () => {
         let contract = await SmartContract.fromFuncSource(source, buildDataCell(DefaultNftConfig))
-        let res = await contract.invokeGetMethod('get_basic_nft_metadata', [])
+        let res = await contract.invokeGetMethod('get_nft_basic_info', [])
         expect(res.result[0]).toBeInstanceOf(Cell)
         let metadata = parseBasicNftMetadataResponse(res.result[0] as Cell)
 
@@ -202,7 +224,7 @@ describe('TON Sellable NFT', () => {
 
     it('should return sales info', async () => {
         let contract = await SmartContract.fromFuncSource(source, buildDataCell(DefaultNftConfig))
-        let res = await contract.invokeGetMethod('get_nft_sales_data', [])
+        let res = await contract.invokeGetMethod('get_nft_sales_info', [])
         expect(res.result[0]).toBeInstanceOf(Cell)
         let info = parseSalesInfoResponse(res.result[0] as Cell)
 
@@ -214,57 +236,6 @@ describe('TON Sellable NFT', () => {
         expect(info.feesDestination.toFriendly()).toEqual(DefaultNftConfig.feesDestination.toFriendly())
         expect(info.royaltiesPercent).toEqual(DefaultNftConfig.royaltiesPercent)
         expect(info.royaltiesDestination.toFriendly()).toEqual(DefaultNftConfig.royaltiesDestination.toFriendly())
-    })
-
-
-    it('should return name', async () => {
-        let contract = await SmartContract.fromFuncSource(source, buildDataCell(DefaultNftConfig))
-        let res = await contract.invokeGetMethod('get_name', [])
-        expect(res.result[0]).toBeInstanceOf(Cell)
-        expect((res.result[0] as Cell).toString()).toEqual(stringToCell('Test').toString())
-    })
-
-    it('should return symbol', async () => {
-        let contract = await SmartContract.fromFuncSource(source, buildDataCell(DefaultNftConfig))
-        let res = await contract.invokeGetMethod('get_symbol', [])
-        expect(res.result[0]).toBeInstanceOf(Cell)
-        expect((res.result[0] as Cell).toString()).toEqual(stringToCell('nft').toString())
-    })
-
-    it('should return creator', async () => {
-        let contract = await SmartContract.fromFuncSource(source, buildDataCell(DefaultNftConfig))
-        let res = await contract.invokeGetMethod('get_creator', [])
-
-        expect(res.result.length).toBe(2)
-        expect(res.result[0]).toBeInstanceOf(BN)
-        expect(res.result[1]).toBeInstanceOf(BN)
-
-        let [wc, address] = res.result as [BN, BN]
-
-        expect(wc.eqn(ownerAndCreator.workChain)).toBe(true)
-        expect(address.eq(new BN(ownerAndCreator.hash))).toBe(true)
-    })
-
-    it('should return owner', async () => {
-        let contract = await SmartContract.fromFuncSource(source, buildDataCell(DefaultNftConfig))
-        let res = await contract.invokeGetMethod('get_owner', [])
-
-        expect(res.result.length).toBe(2)
-        expect(res.result[0]).toBeInstanceOf(BN)
-        expect(res.result[1]).toBeInstanceOf(BN)
-
-        let [wc, address] = res.result as [BN, BN]
-
-        expect(wc.eqn(ownerAndCreator.workChain)).toBe(true)
-        expect(address.eq(new BN(ownerAndCreator.hash))).toBe(true)
-    })
-
-    it('should return content', async () => {
-        let contract = await SmartContract.fromFuncSource(source, buildDataCell(DefaultNftConfig))
-        let res = await contract.invokeGetMethod('get_content', [])
-
-        expect(res.result[0]).toBeInstanceOf(Cell)
-        expect((res.result[0] as Cell).toString()).toEqual(stringToCell('content').toString())
     })
 
     it('should support interfaces', async () => {
@@ -281,7 +252,6 @@ describe('TON Sellable NFT', () => {
     it('should gift nft', async () => {
         let contract = await SmartContract.fromFuncSource(source, buildDataCell(DefaultNftConfig))
 
-        let contractAddress = Address.parseFriendly('EQD4FPq-PRDieyQKkizFTRtSDyucUIqrj0v_zXJmqaDp6_0t').address
         let newOwner = '0:fcb91a3a3816d0f7b8c2c76108b8a9bc5a6b7a55bd79f8ab101c52db29232260'
 
         let bodyCell = new Cell()
@@ -297,32 +267,17 @@ describe('TON Sellable NFT', () => {
         })
 
         // Check current owner
-        let owner = await contract.invokeGetMethod('get_owner', [])
-
-        expect(owner.result.length).toBe(2)
-        expect(owner.result[0]).toBeInstanceOf(BN)
-        expect(owner.result[1]).toBeInstanceOf(BN)
-
-        let [wc, address] = owner.result as [BN, BN]
-
-        expect(wc.eqn(ownerAndCreator.workChain)).toBe(true)
-        expect(address.eq(new BN(ownerAndCreator.hash))).toBe(true)
+        let {owner} = await getBasicNftMetadata(contract)
+        expect(owner.toFriendly()).toEqual(ownerAndCreator.toFriendly())
 
         // Gift nft
         let res = await contract.sendInternalMessage(msg)
+        expect(res.exit_code).toBe(0)
 
         // Check new owner
         let newOwnerAddress = Address.parseRaw(newOwner)
-        owner = await contract.invokeGetMethod('get_owner', [])
-
-        expect(owner.result.length).toBe(2)
-        expect(owner.result[0]).toBeInstanceOf(BN)
-        expect(owner.result[1]).toBeInstanceOf(BN)
-
-        let [newWc, newAddress] = owner.result as [BN, BN]
-
-        expect(newWc.eqn(newOwnerAddress.workChain)).toBe(true)
-        expect(newAddress.eq(new BN(newOwnerAddress.hash))).toBe(true)
+        owner = (await getBasicNftMetadata(contract)).owner
+        expect(owner.toFriendly()).toEqual(newOwnerAddress.toFriendly())
     })
 
     it('should check owner when gifting nft', async () => {
@@ -368,170 +323,77 @@ describe('TON Sellable NFT', () => {
     //  Sales
     //
 
-    it('should return is on sale', async () => {
-        let contract = await SmartContract.fromFuncSource(source, buildDataCell(DefaultNftConfig))
-        let res = await contract.invokeGetMethod('is_on_sell', [])
-        expect(res.result[0]).toEqual(TVM_FALSE)
-
-        contract = await SmartContract.fromFuncSource(source, buildDataCell({...DefaultNftConfig, isOnSale: true}))
-        res = await contract.invokeGetMethod('is_on_sell', [])
-        expect(res.result[0]).toEqual(TVM_TRUE)
-    })
-
-    it('should return is last bid historical', async () => {
-        let contract = await SmartContract.fromFuncSource(source, buildDataCell(DefaultNftConfig))
-        let res = await contract.invokeGetMethod('is_last_bid_historical', [])
-        expect(res.result[0]).toEqual(TVM_FALSE)
-    })
-
-    it('should return last bid value', async () => {
-        let contract = await SmartContract.fromFuncSource(source, buildDataCell(DefaultNftConfig))
-        let res = await contract.invokeGetMethod('last_bid_value', [])
-        expect(res.result[0]).toEqual(new BN(0))
-    })
-
-    it('should return last bidder address', async () => {
-        let contract = await SmartContract.fromFuncSource(source, buildDataCell(DefaultNftConfig))
-        let res = await contract.invokeGetMethod('last_bidder', [])
-
-        expect(res.result.length).toBe(2)
-        expect(res.result[0]).toBeInstanceOf(BN)
-        expect(res.result[1]).toBeInstanceOf(BN)
-
-        let [wc, address] = res.result as [BN, BN]
-
-        expect(wc.eqn(DefaultNftConfig.lastBidder.workChain)).toBe(true)
-        expect(address.eq(new BN(DefaultNftConfig.lastBidder.hash))).toBe(true)
-    })
-
-    it('should return fees percent', async () => {
-        let contract = await SmartContract.fromFuncSource(source, buildDataCell(DefaultNftConfig))
-        let res = await contract.invokeGetMethod('fees_percent', [])
-        expect(res.result[0]).toEqual(new BN(10))
-    })
-
-    it('should return fees destination', async () => {
-        let contract = await SmartContract.fromFuncSource(source, buildDataCell(DefaultNftConfig))
-        let res = await contract.invokeGetMethod('fees_destination', [])
-
-        expect(res.result.length).toBe(2)
-        expect(res.result[0]).toBeInstanceOf(BN)
-        expect(res.result[1]).toBeInstanceOf(BN)
-
-        let [wc, address] = res.result as [BN, BN]
-
-        expect(wc.eqn(DefaultNftConfig.feesDestination.workChain)).toBe(true)
-        expect(address.eq(new BN(DefaultNftConfig.feesDestination.hash))).toBe(true)
-    })
-
-    it('should return royalties percent', async () => {
-        let contract = await SmartContract.fromFuncSource(source, buildDataCell(DefaultNftConfig))
-        let res = await contract.invokeGetMethod('royalties_percent', [])
-        expect(res.result[0]).toEqual(new BN(10))
-    })
-
-    it('should return royalties destination', async () => {
-        let contract = await SmartContract.fromFuncSource(source, buildDataCell(DefaultNftConfig))
-        let res = await contract.invokeGetMethod('royalties_destination', [])
-
-        expect(res.result.length).toBe(2)
-        expect(res.result[0]).toBeInstanceOf(BN)
-        expect(res.result[1]).toBeInstanceOf(BN)
-
-        let [wc, address] = res.result as [BN, BN]
-
-        expect(wc.eqn(DefaultNftConfig.royaltiesDestination.workChain)).toBe(true)
-        expect(address.eq(new BN(DefaultNftConfig.royaltiesDestination.hash))).toBe(true)
-    })
-
     it('should enable selling', async () => {
-        let contractAddress = Address.parseFriendly('EQD4FPq-PRDieyQKkizFTRtSDyucUIqrj0v_zXJmqaDp6_0t').address
         let contract = await SmartContract.fromFuncSource(source, buildDataCell(DefaultNftConfig))
 
         // Check is on sale
-        let res = await contract.invokeGetMethod('is_on_sell', [])
-        expect(res.result[0]).toEqual(TVM_FALSE)
+        let {isOnSale} = await getBasicNftSalesInfo(contract)
+        expect(isOnSale).toEqual(false)
 
-        let bodyCell = new Cell()
-        bodyCell.bits.writeUint(2, 32) // enable_selling
-
-        //  Enable selling
-        res = await contract.sendInternalMessage(new InternalMessage({
+        // Enable selling
+        let res = await contract.sendInternalMessage(new InternalMessage({
             to: contractAddress,
             from: ownerAndCreator,
             value: new BN(0),
             bounce: false,
-            body: new CellMessage(bodyCell)
+            body: new CommentMessage('sel+')
         }))
         expect(res.exit_code).toEqual(0)
-
+        let actions = parseActionsList(Slice.fromCell(res.action_list_cell!))
+        expect(actions).toHaveLength(1)
+        testOkResponse(actions[0], ownerAndCreator)
         // Re-check is on sale
-        res = await contract.invokeGetMethod('is_on_sell', [])
-        expect(res.result[0]).toEqual(TVM_TRUE)
+        isOnSale = (await getBasicNftSalesInfo(contract)).isOnSale
+        expect(isOnSale).toBe(true)
     })
 
     it('should enable selling only when owner calls', async () => {
-        let contractAddress = Address.parseFriendly('EQD4FPq-PRDieyQKkizFTRtSDyucUIqrj0v_zXJmqaDp6_0t').address
         let contract = await SmartContract.fromFuncSource(source, buildDataCell(DefaultNftConfig))
 
         // Check is on sale
-        let res = await contract.invokeGetMethod('is_on_sell', [])
-        expect(res.result[0]).toEqual(TVM_FALSE)
-
-        let bodyCell = new Cell()
-        bodyCell.bits.writeUint(2, 32) // enable_selling
+        let {isOnSale} = await getBasicNftSalesInfo(contract)
+        expect(isOnSale).toBe(false)
 
         //  Enable selling
-        res = await contract.sendInternalMessage(new InternalMessage({
+        let res = await contract.sendInternalMessage(new InternalMessage({
             to: contractAddress,
             from: ZERO_ADDRESS,
             value: new BN(0),
             bounce: false,
-            body: new CellMessage(bodyCell)
+            body: new CommentMessage('sel+')
         }))
         expect(res.exit_code).not.toBe(0)
 
         // Re-check is on sale
-        res = await contract.invokeGetMethod('is_on_sell', [])
-        expect(res.result[0]).toEqual(TVM_FALSE)
+        expect((await getBasicNftSalesInfo(contract)).isOnSale).toBe(false)
     })
 
     it('should not enable selling if already on sale', async () => {
-        let contractAddress = Address.parseFriendly('EQD4FPq-PRDieyQKkizFTRtSDyucUIqrj0v_zXJmqaDp6_0t').address
-        let contract = await SmartContract.fromFuncSource(source, buildDataCell({ ...DefaultNftConfig, isOnSale: true }))
+        let contract = await SmartContract.fromFuncSource(source, buildDataCell({...DefaultNftConfig, isOnSale: true}))
 
         // Check is on sale
-        let res = await contract.invokeGetMethod('is_on_sell', [])
-        expect(res.result[0]).toEqual(TVM_TRUE)
-
-        let bodyCell = new Cell()
-        bodyCell.bits.writeUint(2, 32) // enable_selling
+        expect((await getBasicNftSalesInfo(contract)).isOnSale).toBe(true)
 
         //  Enable selling
-        res = await contract.sendInternalMessage(new InternalMessage({
+        let res = await contract.sendInternalMessage(new InternalMessage({
             to: contractAddress,
             from: ownerAndCreator,
             value: new BN(0),
             bounce: false,
-            body: new CellMessage(bodyCell)
+            body: new CommentMessage('sel+')
         }))
         expect(res.exit_code).not.toBe(0)
     })
 
     it('should place a bid', async () => {
-        let contract = await SmartContract.fromFuncSource(source, buildDataCell({ ...DefaultNftConfig, isOnSale: true }))
-
-        let contractAddress = Address.parseFriendly('EQD4FPq-PRDieyQKkizFTRtSDyucUIqrj0v_zXJmqaDp6_0t').address
-
-        let bodyCell = new Cell()
-        bodyCell.bits.writeUint(1, 32)
+        let contract = await SmartContract.fromFuncSource(source, buildDataCell({...DefaultNftConfig, isOnSale: true}))
 
         let msg = new InternalMessage({
             to: contractAddress,
             from: bidderAddress,
             value: new BN(ONE_TON * 3),
             bounce: false,
-            body: new CellMessage(bodyCell)
+            body: new CommentMessage('pbid')
         })
 
         // Place a bid
@@ -540,19 +402,17 @@ describe('TON Sellable NFT', () => {
         expect(parseActionsList(Slice.fromCell(res.action_list_cell!))).toHaveLength(0)
 
         // Check new bid value
-        res = await contract.invokeGetMethod('last_bid_value', [])
-        expect(res.result[0]).toEqual(new BN(ONE_TON * 2))
+        expect((await getBasicNftSalesInfo(contract)).lastBidValue).toBe(ONE_TON * 2)
 
         // Check new bidder address
-        res = await contract.invokeGetMethod('last_bidder', [])
-        testAddress(res.result, bidderAddress)
+        expect((await getBasicNftSalesInfo(contract)).lastBidder.toFriendly()).toBe(bidderAddress.toFriendly())
 
         msg = new InternalMessage({
             to: contractAddress,
             from: bidderAddress,
             value: new BN(ONE_TON * 4),
             bounce: false,
-            body: new CellMessage(bodyCell)
+            body: new CommentMessage('pbid')
         })
 
         // Place second a bid
@@ -560,8 +420,8 @@ describe('TON Sellable NFT', () => {
         expect(res.exit_code).toEqual(0)
         let actions = parseActionsList(Slice.fromCell(res.action_list_cell!))
 
-        let res2 = await contract.invokeGetMethod('last_bid_value', [])
-        expect(res2.result[0]).toEqual(new BN(ONE_TON * 3))
+        // Check bid value
+        expect((await getBasicNftSalesInfo(contract)).lastBidValue).toBe(ONE_TON * 3)
 
         // Should return previous bid to previous bidder
         expect(actions).toHaveLength(1)
@@ -574,61 +434,53 @@ describe('TON Sellable NFT', () => {
         }
 
         // Check new bid value
-        res = await contract.invokeGetMethod('last_bid_value', [])
-        expect(res.result[0]).toEqual(new BN(ONE_TON * 3))
+        expect((await getBasicNftSalesInfo(contract)).lastBidValue).toBe(ONE_TON * 3)
 
         // Check new bidder address
-        res = await contract.invokeGetMethod('last_bidder', [])
-        testAddress(res.result, bidderAddress)
+        expect((await getBasicNftSalesInfo(contract)).lastBidder.toFriendly()).toBe(bidderAddress.toFriendly())
     })
 
     it('should disable selling', async () => {
-        let contractAddress = Address.parseFriendly('EQD4FPq-PRDieyQKkizFTRtSDyucUIqrj0v_zXJmqaDp6_0t').address
-        let contract = await SmartContract.fromFuncSource(source, buildDataCell({ ...DefaultNftConfig, isOnSale: true }))
+        let contract = await SmartContract.fromFuncSource(source, buildDataCell({
+            ...DefaultNftConfig,
+            isOnSale: true,
+            isLastBidHistorical: true
+        }))
 
         // Check is on sale
-        let res = await contract.invokeGetMethod('is_on_sell', [])
-        expect(res.result[0]).toEqual(TVM_TRUE)
-
-        let bodyCell = new Cell()
-        bodyCell.bits.writeUint(3, 32) // disable_selling
+        expect((await getBasicNftSalesInfo(contract)).isOnSale).toBe(true)
 
         //  Disable selling
-        res = await contract.sendInternalMessage(new InternalMessage({
+        let res = await contract.sendInternalMessage(new InternalMessage({
             to: contractAddress,
             from: ownerAndCreator,
             value: new BN(0),
             bounce: false,
-            body: new CellMessage(bodyCell)
+            body: new CommentMessage('sel-')
         }))
         expect(res.exit_code).toEqual(0)
+        let actions = parseActionsList(Slice.fromCell(res.action_list_cell!))
+        expect(actions).toHaveLength(1)
+        testOkResponse(actions[0], ownerAndCreator)
 
         // Re-check is on sale
-        res = await contract.invokeGetMethod('is_on_sell', [])
-        expect(res.result[0]).toEqual(TVM_FALSE)
+        expect((await getBasicNftSalesInfo(contract)).isOnSale).toBe(false)
     })
 
     it('should return last bid value to bidder when disabling sale', async () => {
-        let contractAddress = Address.parseFriendly('EQD4FPq-PRDieyQKkizFTRtSDyucUIqrj0v_zXJmqaDp6_0t').address
-        let contract = await SmartContract.fromFuncSource(source, buildDataCell({ ...DefaultNftConfig, isOnSale: true }))
-
-        let bodyCell = new Cell()
-        bodyCell.bits.writeUint(1, 32)
+        let contract = await SmartContract.fromFuncSource(source, buildDataCell({...DefaultNftConfig, isOnSale: true}))
 
         let msg = new InternalMessage({
             to: contractAddress,
             from: bidderAddress,
             value: new BN(ONE_TON * 3),
             bounce: false,
-            body: new CellMessage(bodyCell)
+            body: new CommentMessage('pbid')
         })
 
         // Place a bid
         let res = await contract.sendInternalMessage(msg)
         expect(res.exit_code).toBe(0)
-
-        bodyCell = new Cell()
-        bodyCell.bits.writeUint(3, 32) // disable_selling
 
         //  Disable selling
         res = await contract.sendInternalMessage(new InternalMessage({
@@ -636,7 +488,7 @@ describe('TON Sellable NFT', () => {
             from: ownerAndCreator,
             value: new BN(0),
             bounce: false,
-            body: new CellMessage(bodyCell)
+            body: new CommentMessage('sel-')
         }))
         let actions = parseActionsList(Slice.fromCell(res.action_list_cell!))
 
@@ -650,21 +502,15 @@ describe('TON Sellable NFT', () => {
         }
 
         // Last bid should marked as historical after sale disable
-        res = await contract.invokeGetMethod('is_last_bid_historical', [])
-        expect(res.result[0]).toEqual(TVM_TRUE)
+        expect((await getBasicNftSalesInfo(contract)).isLastBidHistorical).toBe(true)
     })
 
     it('should not return last bid value to bidder when disabling sale if bid is historical', async () => {
-        let contractAddress = Address.parseFriendly('EQD4FPq-PRDieyQKkizFTRtSDyucUIqrj0v_zXJmqaDp6_0t').address
         let contract = await SmartContract.fromFuncSource(source, buildDataCell({
             ...DefaultNftConfig,
             isOnSale: true,
             isLastBidHistorical: true
         }))
-
-
-        let bodyCell = new Cell()
-        bodyCell.bits.writeUint(3, 32) // disable_selling
 
         //  Disable selling
         let res = await contract.sendInternalMessage(new InternalMessage({
@@ -672,7 +518,7 @@ describe('TON Sellable NFT', () => {
             from: ownerAndCreator,
             value: new BN(0),
             bounce: false,
-            body: new CellMessage(bodyCell)
+            body: new CommentMessage('sel-')
         }))
         expect(res.exit_code).toEqual(0)
 
@@ -691,18 +537,14 @@ describe('TON Sellable NFT', () => {
             royaltiesPercent
         }))
 
-        let contractAddress = Address.parseFriendly('EQD4FPq-PRDieyQKkizFTRtSDyucUIqrj0v_zXJmqaDp6_0t').address
-
         let bid = ONE_TON * 2
 
-        let bodyCell = new Cell()
-        bodyCell.bits.writeUint(1, 32)
         let msg = new InternalMessage({
             to: contractAddress,
             from: bidderAddress,
             value: new BN(bid + ONE_TON),
             bounce: false,
-            body: new CellMessage(bodyCell)
+            body: new CommentMessage('pbid')
         })
 
         // Place a bid
@@ -711,14 +553,12 @@ describe('TON Sellable NFT', () => {
         expect(parseActionsList(Slice.fromCell(res.action_list_cell!))).toHaveLength(0)
 
         // Accept last bid
-        bodyCell = new Cell()
-        bodyCell.bits.writeUint(4, 32)
         msg = new InternalMessage({
             to: contractAddress,
             from: ownerAndCreator,
             value: new BN(0),
             bounce: false,
-            body: new CellMessage(bodyCell)
+            body: new CommentMessage('acpt')
         })
         res = await contract.sendInternalMessage(msg)
         let actions = parseActionsList(Slice.fromCell(res.action_list_cell!))
