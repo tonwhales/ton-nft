@@ -1,7 +1,7 @@
 import {Address, Cell, CellMessage, ExternalMessage, InternalMessage} from "ton";
-import {SmartContract} from "../../contract-executor/SmartContract";
 import {readFile} from "fs/promises";
 import BN from "bn.js";
+import {SmartContract} from "ton-contract-executor";
 
 const stringToCell = (str: string) => {
     let cell = new Cell()
@@ -28,7 +28,7 @@ describe('TON NFT', () => {
     let source: string
 
     beforeAll(async () => {
-        source = (await readFile('/Users/altox/Desktop/ton-dev/packages/nft/ton-nft/ton-nft.fc')).toString('utf-8')
+        source = (await readFile('./packages/nft/ton-nft/ton-nft.fc')).toString('utf-8')
     })
 
     it('should return name', async () => {

@@ -16,8 +16,8 @@
   "dependencies": {
     "@types/bn.js": "^5.1.0",
     "bn.js": "^5.2.0",
-    "ton": "^6.2.1",
+    "ton": "^6.3.0",
     "ton-compiler": "^0.9.0",
-    "ton-contract-executor": "^0.1.2"
+    "ton-contract-executor": "^0.1.8"
   }
 }

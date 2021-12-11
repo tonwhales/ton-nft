@@ -1,3 +1,7 @@
+;;
+;;  Simple contract to test sending grams in different modes
+;;
+
 () send_money(int wc, int addr, int amount, int mode) impure {
     send_raw_message(
         begin_cell()

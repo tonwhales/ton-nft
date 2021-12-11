@@ -1,13 +1,7 @@
-import {Address, Cell, ContractSource, TonClient} from "ton";
+import {Cell, ContractSource, TonClient} from "ton";
 import {compileFunc} from "ton-compiler";
 import {readFile} from "fs/promises";
 import {contractAddress} from "ton/dist/contracts/sources/ContractSource";
-
-const stringToCell = (str: string) => {
-    let cell = new Cell()
-    cell.bits.writeString(str)
-    return cell
-}
 
 function buildDataCell() {
     let dataCell = new Cell()
@@ -17,7 +11,7 @@ function buildDataCell() {
 }
 
 async function deploy() {
-    let funcSource = (await readFile('/Users/altox/Desktop/ton-dev/packages/nft/test/ping-pong.fc')).toString('utf-8')
+    let funcSource = (await readFile('./packages/nft/ping-pong/ping-pong.fc')).toString('utf-8')
     let source = await compileFunc(funcSource)
     let sourceCell = Cell.fromBoc(source.cell)[0]
     let dataCell = buildDataCell()

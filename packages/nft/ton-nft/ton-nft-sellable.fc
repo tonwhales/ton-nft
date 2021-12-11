@@ -244,7 +244,7 @@ slice pack_std_addr(int wc, int addr) {
 
 () handle_place_a_bid() impure {
 
-    (slice sender_address, _, _, int msg_value) = query_info;
+    var (slice sender_address, _, _, int msg_value) = query_info;
 
     (cell metadata, slice creator, slice owner, cell content, cell sales) = load_data();
 
@@ -282,7 +282,7 @@ slice pack_std_addr(int wc, int addr) {
     }  
 
     ;; Return value to previous bidder if last_bid > 0 and bid is not historical
-    if ((last_bid_value > 0) & ( ~ is_last_bid_historical)) {
+    if ((last_bid_value > 0) & ( ~ is_last_bid_historical )) {
         var (wc, address) = last_bidder.parse_std_addr();
         send_money(wc, address, last_bid_value);
     }
@@ -427,7 +427,7 @@ slice pack_std_addr(int wc, int addr) {
     );
     
     ;; Send ok response
-    send_ok(0);
+    ;; send_ok(0);
 }
 
 () handle_accept_last_bid() impure {
