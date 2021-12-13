@@ -500,4 +500,24 @@ describe('TON Sellable NFT', () => {
         testMessageValue(royaltiesMsg, DefaultNftConfig.royaltiesDestination, new BN(royalties))
         testMessageValue(feesMsg, DefaultNftConfig.feesDestination, new BN(fees))
     })
+
+    it('should accept bid 2', async () => {
+        const feesPercent = 15
+        const royaltiesPercent = 15
+
+        let data = Cell.fromBoc(Buffer.from('te6cckEBBAEA7gADhcAPgU+r49EOJ7JAqSLMVNG1IPK5xQiquPS//NcmapoOnrgB8Cn1fHohxPZIFSRZipo2pB5XOKEVVx6X/5rkzVNB09cBAgMARQSRmlyc3Qgc2VsbGFibGUgTkZUA5GSVJTVF9TRUxMQUJMRYACRodHRwczovL3QubWUvbmFyZWsA1ZB3NZQCAF0bLTdrabR8FZTbOCb75iTh2RmNmx+pbVR0k2+55caqBUAPgU+r49EOJ7JAqSLMVNG1IPK5xQiquPS//NcmapoOnrCoAfAp9Xx6IcT2SBUkWYqaNqQeVzihFVcel/+a5M1TQdPXIf2ACQ==', 'base64'))
+
+        let contract = await SmartContract.fromFuncSource(source, data[0])
+        // Accept last bid
+        let msg = new InternalMessage({
+            to: contractAddress,
+            from: ownerAndCreator,
+            value: new BN(0),
+            bounce: false,
+            body: new CommentMessage('acpt')
+        })
+        let res = await contract.sendInternalMessage(msg)
+        let actions = parseActionsList(Slice.fromCell(res.action_list_cell!))
+        console.log(actions)
+    })
 })

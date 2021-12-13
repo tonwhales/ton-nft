@@ -518,7 +518,7 @@ slice pack_std_addr(int wc, int addr) {
     );
     
     ;; Send ok response
-    send_ok(0);
+    ;; send_ok(0);
 }
 
 () handle_comment_message (slice msg_body) impure {
@@ -706,8 +706,11 @@ cell get_nft_sales_info() method_id {
 ;;  Introspection
 ;;
 
-(int, int) supported_interfaces() method_id {
-    ;; 126808: BasicNFT
+(int, int, int, int, int) supported_interfaces() method_id {
+    ;; 60197: Basic NFT interface
+    ;; 97398: Basic NFT interface with comment messages
+    ;; 124087: Sellable NFT interface
+    ;; 37183: Sellable NFT interface with comment messages
     ;; 81264: BasicIntrospection
-    return (126808, 81264);
+    return (60197, 97398, 124087, 37183, 81264);
 }

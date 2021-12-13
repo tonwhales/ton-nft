@@ -5,32 +5,31 @@ import {CodeBuilder} from "../utils/CodeBuilder";
 //  Interface declaration is a list of all public GET function names & list of supported messages
 //
 
-type InterfaceDeclaration = {
+export type SmartContractInterfaceDeclaration = {
     name: string,
-    declaration: string
+    declaration: string[] // declaration split to lines
 }
 
-const BasicIntrospectionInterface: InterfaceDeclaration = {
+const BasicIntrospectionInterface: SmartContractInterfaceDeclaration = {
     name: 'BasicIntrospection',
-    declaration: '(int...) supported_interfaces()'
+    declaration: ['(int...) supported_interfaces()']
 }
 
 function getFunctionSelector(declaration: string) {
     return (crc16(declaration) & 0xffff) | 0x10000
 }
 
-function getInterfaceId(interfaceDeclaration: string) {
-    let lines = interfaceDeclaration.split('\n')
+function getInterfaceId(interfaceDeclaration: string[]) {
     let interfaceId = 0
 
-    for (let line of lines) {
+    for (let line of interfaceDeclaration) {
         interfaceId ^= getFunctionSelector(line)
     }
 
     return interfaceId
 }
 
-function genSupportsInterfaceFunction(interfaces: InterfaceDeclaration[]) {
+export function genSupportsInterfaceFunction(interfaces: SmartContractInterfaceDeclaration[]) {
     interfaces.push(BasicIntrospectionInterface)
 
     let code = new CodeBuilder()
@@ -46,24 +45,3 @@ function genSupportsInterfaceFunction(interfaces: InterfaceDeclaration[]) {
 
     return code.render()
 }
-
-let basicNFTDeclaration =
-    'cell get_name()\n' +
-    'cell get_symbol()\n' +
-    '(int, int) get_creator()\n' +
-    '(int, int) get_owner()\n' +
-    'cell get_content()'
-
-let basicNFTInterface = {
-    name: 'BasicNFT',
-    declaration: basicNFTDeclaration
-}
-
-let getSequenceInterface = {
-    name: 'GetSequenqe',
-    declaration: 'int get_seq()'
-}
-
-console.log(genSupportsInterfaceFunction([
-    basicNFTInterface
-]))
