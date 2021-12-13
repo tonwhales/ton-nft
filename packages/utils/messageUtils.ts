@@ -1,6 +1,6 @@
 import {RawCommonMessageInfo, RawCurrencyCollection, RawMessage, RawStateInit, Slice} from "ton";
 
-function readCurrencyCollection(slice: Slice): RawCurrencyCollection {
+export function readCurrencyCollection(slice: Slice): RawCurrencyCollection {
     const coins = slice.readCoins();
     if (slice.readBit()) {
         throw Error('Currency collctions are not supported yet');

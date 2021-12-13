@@ -180,7 +180,7 @@ slice pack_std_addr(int wc, int addr) {
     return (source, (wc, address));
 }
 
-() send_money(int wc, int addr, int amount) impure {
+() send_money(int wc, int addr, int amount, int mode) impure {
     send_raw_message(
         begin_cell()
             .store_uint(0xc4, 9)
@@ -190,7 +190,7 @@ slice pack_std_addr(int wc, int addr) {
             .store_uint(0, 1 + 4 + 4 + 64 + 32 + 1 + 1)
             .store_uint(0, 32) ;; Simple money transfer
             .end_cell(), 
-        3
+        mode
     );
 }
 
@@ -264,11 +264,11 @@ slice pack_std_addr(int wc, int addr) {
     ;; Throw if NFT is not on sale
     throw_if(400, is_on_sale == 0);
 
-    ;; Substract 1TON for fees
+    ;; Substract reserved 1TON for fees
     var bid_value = msg_value - 1000000000;
 
-    ;; Throw if bid is less than 1TON
-    throw_if(400, bid_value < 1000000000);
+    ;; Throw if bid is less than 0.1TON
+    throw_if(400, bid_value < 100000000);
 
     ;; Throw if last bid was greater or equal
     throw_if(400, last_bid_value >= bid_value);
@@ -277,18 +277,16 @@ slice pack_std_addr(int wc, int addr) {
     (int sender_wc, int sender_addr) = sender_address.parse_std_addr();
 
     ;; Throw if bidder is owner
-    if ((owner_wc == sender_wc) & (sender_addr == owner_address)) {
-        throw(400);
-    }  
+    throw_if(400, (owner_wc == sender_wc) & (sender_addr == owner_address));
 
     ;; Return value to previous bidder if last_bid > 0 and bid is not historical
     if ((last_bid_value > 0) & ( ~ is_last_bid_historical )) {
+        ;; reserve all but last bid value
+        raw_reserve(last_bid_value, 3);
         var (wc, address) = last_bidder.parse_std_addr();
-        send_money(wc, address, last_bid_value);
+        send_money(wc, address, last_bid_value, 2);
     }
-
-    ;; TODO: Return remairing
-
+    
     ;; Save data with new bid
     var sales_data = (
         is_on_sale, 
@@ -313,7 +311,8 @@ slice pack_std_addr(int wc, int addr) {
         new_sales_data
     );
     
-    return ();
+    ;; Send ok response
+    send_ok(bid_value);
 }
 
 () handle_enable_selling() impure {
@@ -394,13 +393,16 @@ slice pack_std_addr(int wc, int addr) {
     (int owner_wc, int owner_address) = parse_std_addr(owner);
     (int sender_wc, int sender_address) = parse_std_addr(sender_address);
 
-   ;; Throw if sender is not owner
+    ;; Throw if sender is not owner
     throw_unless(400, (owner_wc == sender_wc) & (sender_address == owner_address));
 
     ;; Return last bid value to bidder if bid is not historical
     if (is_last_bid_historical == 0) {
+        ;; reserve all but last bid value
+        raw_reserve(last_bid_value, 3);
+
         var (wc, address) = last_bidder.parse_std_addr();
-        send_money(wc, address, last_bid_value);
+        send_money(wc, address, last_bid_value, 2);
     }
 
     var sales_data = (
@@ -427,7 +429,7 @@ slice pack_std_addr(int wc, int addr) {
     );
     
     ;; Send ok response
-    ;; send_ok(0);
+    send_ok(0);
 }
 
 () handle_accept_last_bid() impure {
@@ -463,6 +465,9 @@ slice pack_std_addr(int wc, int addr) {
     ;; Throw if last bid is 0
     throw_if(400, last_bid_value == 0);
 
+    ;; reserve all but last bid value
+    raw_reserve(last_bid_value, 3);
+
     int remaining = last_bid_value;
 
     if (fees_percent > 0) {
@@ -471,7 +476,7 @@ slice pack_std_addr(int wc, int addr) {
 
         ;; Send fees
         var (fd_wc, fd_address) = fees_destination.parse_std_addr();
-        send_money(fd_wc, fd_address, fees_value);
+        send_money(fd_wc, fd_address, fees_value, 2);
 
         remaining = remaining - fees_value;
     }
@@ -481,13 +486,13 @@ slice pack_std_addr(int wc, int addr) {
 
         ;; Send royalties
         var (r_wc, r_address) = royalties_destination.parse_std_addr();
-        send_money(r_wc, r_address, royalties_value);
+        send_money(r_wc, r_address, royalties_value, 2);
 
         remaining = remaining - royalties_value;
     }
 
     ;; Send remaining value to previous owner
-    send_money(owner_wc, owner_address, remaining);
+    send_money(owner_wc, owner_address, remaining, 2);
 
     var sales_data = (
         0,                  ;; Set as not selling 
@@ -512,7 +517,8 @@ slice pack_std_addr(int wc, int addr) {
         new_sales_data
     );
     
-    return ();
+    ;; Send ok response
+    send_ok(0);
 }
 
 () handle_comment_message (slice msg_body) impure {

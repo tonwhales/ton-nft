@@ -8,7 +8,7 @@ import {
 } from "ton";
 import {readFile} from "fs/promises";
 import BN from "bn.js";
-import {OutAction, parseActionsList, SendMsgOutAction} from "../../utils/parseActionsList";
+import {OutAction, parseActionsList, ReserveCurrencyAction, SendMsgOutAction} from "../../utils/parseActionsList";
 import {SmartContract} from "ton-contract-executor";
 
 const stringToCell = (str: string) => {
@@ -172,8 +172,6 @@ async function getBasicNftSalesInfo(contract: SmartContract) {
     return parseSalesInfoResponse(res.result[0] as Cell)
 }
 
-
-
 type NormalizedStackEntry =
     | null
     | Cell
@@ -200,6 +198,19 @@ function testOkResponse(res: OutAction, exceptedAddress: Address) {
     expect(res.message.info.dest!.toFriendly()).toEqual(exceptedAddress.toFriendly())
     let slice = Slice.fromCell(res.message.body)
     expect(slice.readUint(32).toNumber()).toEqual(0xef6b6179)
+}
+
+function testMessageValue(res: OutAction, exceptedAddress: Address, expectedValue: BN) {
+    expect(res.type).toEqual('send_msg')
+    if (res.type !== 'send_msg') {
+        return
+    }
+    expect(res.message.info.type).toEqual('internal')
+    if (res.message.info.type !== 'internal') {
+        return
+    }
+    expect(res.message.info.dest!.toFriendly()).toEqual(exceptedAddress.toFriendly())
+    expect(res.message.info.value.coins).toEqual(expectedValue)
 }
 
 describe('TON Sellable NFT', () => {
@@ -342,9 +353,11 @@ describe('TON Sellable NFT', () => {
         let actions = parseActionsList(Slice.fromCell(res.action_list_cell!))
         expect(actions).toHaveLength(1)
         testOkResponse(actions[0], ownerAndCreator)
+
         // Re-check is on sale
-        isOnSale = (await getBasicNftSalesInfo(contract)).isOnSale
-        expect(isOnSale).toBe(true)
+        let salesInfo = await getBasicNftSalesInfo(contract)
+        expect(salesInfo.isOnSale).toBe(true)
+        expect(salesInfo.isLastBidHistorical).toBe(true)
     })
 
     it('should enable selling only when owner calls', async () => {
@@ -399,7 +412,14 @@ describe('TON Sellable NFT', () => {
         // Place a bid
         let res = await contract.sendInternalMessage(msg)
         expect(res.exit_code).toEqual(0)
-        expect(parseActionsList(Slice.fromCell(res.action_list_cell!))).toHaveLength(0)
+        let actions = parseActionsList(Slice.fromCell(res.action_list_cell!))
+        expect(actions).toHaveLength(2)
+        let [okResponse, reserve] = actions as [SendMsgOutAction, ReserveCurrencyAction]
+
+        testOkResponse(okResponse, bidderAddress)
+        // Should reserve all but bid value - reserved 1 TON
+        expect(reserve.mode).toBe(4)    // Balance + value
+        expect(reserve.currency.coins).toEqual(new BN(ONE_TON * 2))
 
         // Check new bid value
         expect((await getBasicNftSalesInfo(contract)).lastBidValue).toBe(ONE_TON * 2)
@@ -418,20 +438,26 @@ describe('TON Sellable NFT', () => {
         // Place second a bid
         res = await contract.sendInternalMessage(msg)
         expect(res.exit_code).toEqual(0)
-        let actions = parseActionsList(Slice.fromCell(res.action_list_cell!))
+        actions = parseActionsList(Slice.fromCell(res.action_list_cell!))
 
         // Check bid value
         expect((await getBasicNftSalesInfo(contract)).lastBidValue).toBe(ONE_TON * 3)
 
         // Should return previous bid to previous bidder
-        expect(actions).toHaveLength(1)
-        let action = actions[0] as SendMsgOutAction
-        expect(action.message.info.dest!.toFriendly()).toEqual(bidderAddress.toFriendly())
-        expect(action.message.info.type).toEqual('internal')
-        if (action.message.info.type === 'internal') {
-            // Minus 1 ton for fees
-            expect(action.message.info.value.coins.toNumber()).toEqual(ONE_TON * 2)
-        }
+        expect(actions).toHaveLength(4)
+        console.log(actions)
+        let [okResp, reserve1, returnBid, reserve2] = actions as [SendMsgOutAction, ReserveCurrencyAction, SendMsgOutAction, ReserveCurrencyAction]
+
+        testOkResponse(okResp, bidderAddress)
+        // Should reserve all but bid value - reserved 1 TON
+        expect(reserve1.mode).toBe(4)    // Balance + value
+        expect(reserve1.currency.coins).toEqual(new BN(ONE_TON * 3))
+
+        // Should return prev bid
+        testMessageValue(returnBid, bidderAddress, new BN(ONE_TON * 2))
+        // Should reserve all but prev bid value
+        expect(reserve2.mode).toBe(3)
+        expect(reserve2.currency.coins).toEqual(new BN(ONE_TON * 2))
 
         // Check new bid value
         expect((await getBasicNftSalesInfo(contract)).lastBidValue).toBe(ONE_TON * 3)
@@ -459,9 +485,9 @@ describe('TON Sellable NFT', () => {
             body: new CommentMessage('sel-')
         }))
         expect(res.exit_code).toEqual(0)
-        // let actions = parseActionsList(Slice.fromCell(res.action_list_cell!))
-        // expect(actions).toHaveLength(1)
-        // testOkResponse(actions[0], ownerAndCreator)
+        let actions = parseActionsList(Slice.fromCell(res.action_list_cell!))
+        expect(actions).toHaveLength(1)
+        testOkResponse(actions[0], ownerAndCreator)
 
         // Re-check is on sale
         expect((await getBasicNftSalesInfo(contract)).isOnSale).toBe(false)
@@ -491,18 +517,17 @@ describe('TON Sellable NFT', () => {
             body: new CommentMessage('sel-')
         }))
         let actions = parseActionsList(Slice.fromCell(res.action_list_cell!))
+        expect(actions).toHaveLength(3)
 
-        expect(actions).toHaveLength(1)
-        let action = actions[0] as SendMsgOutAction
-        expect(action.message.info.dest!.toFriendly()).toEqual(bidderAddress.toFriendly())
-        expect(action.message.info.type).toEqual('internal')
-        if (action.message.info.type === 'internal') {
-            // Minus 1 ton for fees
-            expect(action.message.info.value.coins.toNumber()).toEqual(ONE_TON * 2)
-        }
+        let [response, bidReturn, reserve] = actions as [SendMsgOutAction, SendMsgOutAction, ReserveCurrencyAction]
 
-        // Last bid should marked as historical after sale disable
-        expect((await getBasicNftSalesInfo(contract)).isLastBidHistorical).toBe(true)
+        testOkResponse(response, ownerAndCreator)
+        // Minus 1 ton for fees
+        testMessageValue(bidReturn, bidderAddress, new BN(ONE_TON * 2))
+
+        // Should reserve all but bid value (mode 3)
+        expect(reserve.mode).toBe(3)
+        expect(reserve.currency.coins).toEqual(new BN(ONE_TON * 2))
     })
 
     it('should not return last bid value to bidder when disabling sale if bid is historical', async () => {
@@ -523,7 +548,8 @@ describe('TON Sellable NFT', () => {
         expect(res.exit_code).toEqual(0)
 
         let actions = parseActionsList(Slice.fromCell(res.action_list_cell!))
-        expect(actions).toHaveLength(0)
+        expect(actions).toHaveLength(1)
+        testOkResponse(actions[0], ownerAndCreator)
     })
 
     it('should accept bid', async () => {
@@ -550,7 +576,6 @@ describe('TON Sellable NFT', () => {
         // Place a bid
         let res = await contract.sendInternalMessage(msg)
         expect(res.exit_code).toEqual(0)
-        expect(parseActionsList(Slice.fromCell(res.action_list_cell!))).toHaveLength(0)
 
         // Accept last bid
         msg = new InternalMessage({
@@ -562,37 +587,22 @@ describe('TON Sellable NFT', () => {
         })
         res = await contract.sendInternalMessage(msg)
         let actions = parseActionsList(Slice.fromCell(res.action_list_cell!))
-        expect(actions).toHaveLength(3)
+        expect(actions).toHaveLength(5)
+
+        let [
+            okResponse,
+            msgToOwner,
+            royaltiesMsg,
+            feesMsg
+        ] = actions as [SendMsgOutAction, SendMsgOutAction, SendMsgOutAction, SendMsgOutAction, ReserveCurrencyAction]
 
         let fees = bid / 100 * feesPercent
         let royalties = bid / 100 * royaltiesPercent
         let remaining = bid - fees - royalties
 
-
-        let feesMessageValue!: BN
-        let royaltiesMessageValue!: BN
-        let ownerMessageValue!: BN
-
-        for (let action of actions) {
-            if (action.type === 'send_msg' && action.message.info.type === 'internal') {
-                if (action.message.info.dest!.toFriendly() === feesDestination.toFriendly()) {
-                    feesMessageValue = action.message.info.value.coins
-                }
-                if (action.message.info.dest!.toFriendly() === royaltiesDestination.toFriendly()) {
-                    royaltiesMessageValue = action.message.info.value.coins
-                }
-                if (action.message.info.dest!.toFriendly() === ownerAndCreator.toFriendly()) {
-                    ownerMessageValue = action.message.info.value.coins
-                }
-            }
-        }
-
-        expect(feesMessageValue).not.toBeUndefined()
-        expect(royaltiesMessageValue).not.toBeUndefined()
-        expect(ownerMessageValue).not.toBeUndefined()
-
-        expect(feesMessageValue).toEqual(new BN(fees))
-        expect(royaltiesMessageValue).toEqual(new BN(royalties))
-        expect(ownerMessageValue).toEqual(new BN(remaining))
+        testOkResponse(okResponse, ownerAndCreator)
+        testMessageValue(msgToOwner, DefaultNftConfig.owner, new BN(remaining))
+        testMessageValue(royaltiesMsg, DefaultNftConfig.royaltiesDestination, new BN(royalties))
+        testMessageValue(feesMsg, DefaultNftConfig.feesDestination, new BN(fees))
     })
 })
