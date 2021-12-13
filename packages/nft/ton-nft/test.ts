@@ -5,22 +5,11 @@ async function main() {
     let client = new TonClient({
         endpoint: 'https://testnet.toncenter.com/api/v2/jsonRPC'
     })
-    const address = Address.parseFriendly('EQCcNVbR_evmZzv9KESmb59CsenPz4ZPkS6LfvPacFfeDVAL').address
+    const address = Address.parseFriendly('EQC3PpSnA0cxSx-J6o1NJ_rzPcYsByLn3poGbDFY6KRb_-z0').address
     let nft = new TonNftSellable(client, address)
 
-    console.log('getName', await nft.getName())
-    console.log('getSymbol', await nft.getSymbol())
-    console.log('getContent', await nft.getContent())
-    console.log('getCreator', await nft.getCreator())
-    console.log('getOwner', await nft.getOwner())
-    console.log('getIsOnSale', await nft.getIsOnSale())
-    console.log('getIsLastBidHistorical', await nft.getIsLastBidHistorical())
-    console.log('getLastBidValue', await nft.getLastBidValue())
-    console.log('getLastBidder', await nft.getLastBidder())
-    console.log('getFeesPercent', await nft.getFeesPercent())
-    console.log('getFeesDestination', await nft.getFeesDestination())
-    console.log('getRoyaltiesPercent', await nft.getRoyaltiesPercent())
-    console.log('getRoyaltiesDestination', await nft.getRoyaltiesDestination())
+    console.log('getBasicInfo', await nft.getBasicInfo())
+    console.log('getSalesInfo', await nft.getSalesInfo())
     console.log('getSupportedInterfaces', await nft.getSupportedInterfaces())
 
 }
