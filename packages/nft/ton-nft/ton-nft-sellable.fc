@@ -290,7 +290,7 @@ slice pack_std_addr(int wc, int addr) {
     ;; Save data with new bid
     var sales_data = (
         is_on_sale, 
-        is_last_bid_historical,
+        0,                      ;; Mark last bid as actiove
         bid_value,
         sender_address,
         fees_percent,

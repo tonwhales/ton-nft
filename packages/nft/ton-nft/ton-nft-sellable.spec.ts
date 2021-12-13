@@ -286,7 +286,11 @@ describe('TON Sellable NFT', () => {
     })
 
     it('should place a bid', async () => {
-        let contract = await SmartContract.fromFuncSource(source, buildDataCell({...DefaultNftConfig, isOnSale: true}))
+        let contract = await SmartContract.fromFuncSource(source, buildDataCell({
+            ...DefaultNftConfig,
+            isOnSale: true,
+            isLastBidHistorical: true
+        }))
 
         let msg = new InternalMessage({
             to: contractAddress,
@@ -308,11 +312,16 @@ describe('TON Sellable NFT', () => {
         expect(reserve.mode).toBe(4)    // Balance + value
         expect(reserve.currency.coins).toEqual(new BN(ONE_TON * 2))
 
+
+        let salesInfo = await getBasicNftSalesInfo(contract)
         // Check new bid value
-        expect((await getBasicNftSalesInfo(contract)).lastBidValue).toBe(ONE_TON * 2)
+        expect(salesInfo.lastBidValue).toBe(ONE_TON * 2)
 
         // Check new bidder address
-        expect((await getBasicNftSalesInfo(contract)).lastBidder.toFriendly()).toBe(bidderAddress.toFriendly())
+        expect(salesInfo.lastBidder.toFriendly()).toBe(bidderAddress.toFriendly())
+
+        // Last bid should not be historical
+        expect(salesInfo.isLastBidHistorical).toBe(false)
 
         msg = new InternalMessage({
             to: contractAddress,
