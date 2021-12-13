@@ -3,6 +3,7 @@ import {bocToCell} from "ton-contract-executor";
 
 export class TonNftSellable {
     constructor(private client: TonClient, public address: Address) {
+
     }
 
     getContent = async () => {

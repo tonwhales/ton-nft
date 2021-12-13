@@ -68,22 +68,22 @@ function buildDataCell(config: NftConfig) {
     metadataCell.bits.writeString(symbol)                        // symbol
 
     let salesCell = new Cell()
-    salesCell.bits.writeUint(isOnSale ? 1 : 0, 1)          // is_on_sale
-    salesCell.bits.writeUint(isLastBidHistorical ? 1 : 0, 1)          // is_last_bid_historical
-    salesCell.bits.writeCoins(lastBidValue)                    // last_bid_value
-    salesCell.bits.writeAddress(lastBidder)               // last_bidder
-    salesCell.bits.writeUint(feesPercent, 8)         // fees_percent
-    salesCell.bits.writeAddress(feesDestination)            // fees_destination
-    salesCell.bits.writeUint(royaltiesPercent, 8)         // royalties_percent
-    salesCell.bits.writeAddress(royaltiesDestination)       // royalties_destination
+    salesCell.bits.writeUint(isOnSale ? 1 : 0, 1)                   // is_on_sale
+    salesCell.bits.writeUint(isLastBidHistorical ? 1 : 0, 1)        // is_last_bid_historical
+    salesCell.bits.writeCoins(lastBidValue)                                         // last_bid_value
+    salesCell.bits.writeAddress(lastBidder)                                         // last_bidder
+    salesCell.bits.writeUint(feesPercent, 8)                                // fees_percent
+    salesCell.bits.writeAddress(feesDestination)                                    // fees_destination
+    salesCell.bits.writeUint(royaltiesPercent, 8)                           // royalties_percent
+    salesCell.bits.writeAddress(royaltiesDestination)                               // royalties_destination
 
     let dataCell = new Cell()
-    dataCell.bits.writeUint(0, 1)        // inited
-    dataCell.refs.push(metadataCell)                    // metadata
-    dataCell.bits.writeAddress(creator)         // creator
-    dataCell.bits.writeAddress(owner)         // owner
-    dataCell.refs.push(stringToCell(content))           // content
-    dataCell.refs.push(salesCell)                       // sales_cell
+    dataCell.bits.writeUint(0, 1)           // inited
+    dataCell.refs.push(metadataCell)                        // metadata
+    dataCell.bits.writeAddress(creator)                     // creator
+    dataCell.bits.writeAddress(owner)                       // owner
+    dataCell.refs.push(stringToCell(content))               // content
+    dataCell.refs.push(salesCell)                           // sales_cell
 
     return dataCell
 }
