@@ -137,13 +137,19 @@ describe('TON Sellable NFT', () => {
     })
 
     it('should support interfaces', async () => {
-        const BASIC_NFT_INTERFACE = new BN(126808)
+        const BASIC_NFT_INTERFACE = new BN(60197)
+        const BASIC_NFT_WITH_COMMENTS_INTERFACE = new BN(97398)
+        const BASIC_NFT_SELLABLE_INTERFACE = new BN(124087)
+        const BASIC_NFT_SELLABLE_WITH_COMMENTS_INTERFACE = new BN(37183)
         const BASIC_INTROSPECTION_INTERFACE = new BN(81264)
 
         let contract = await SmartContract.fromFuncSource(source, buildDataCell(DefaultNftConfig))
         let res = await contract.invokeGetMethod('supported_interfaces', [])
 
         expect(res.result).toContainEqual(BASIC_NFT_INTERFACE)
+        expect(res.result).toContainEqual(BASIC_NFT_WITH_COMMENTS_INTERFACE)
+        expect(res.result).toContainEqual(BASIC_NFT_SELLABLE_INTERFACE)
+        expect(res.result).toContainEqual(BASIC_NFT_SELLABLE_WITH_COMMENTS_INTERFACE)
         expect(res.result).toContainEqual(BASIC_INTROSPECTION_INTERFACE)
     })
 

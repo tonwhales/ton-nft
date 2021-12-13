@@ -600,23 +600,31 @@ slice pack_std_addr(int wc, int addr) {
         query_info = (sender_address, query_id, op, msg_value);
     }
 
+    ;; Gift to
+    if (op == 0x9d84cf96) {
+        var dest_addr = msg_body~load_msg_addr();
+
+        (int wc, int addr) = parse_std_addr(dest_addr);
+        return handle_gift(wc, addr);
+    }
+
     ;; Place a bid
-    if (op == 1) {
+    if (op == 0x5cb63e53) {
         return handle_place_a_bid();
     }
 
     ;; Enable selling
-    if (op == 2) {
+    if (op == 0x2ed7c261) {
         return handle_enable_selling();
     }
 
     ;; Disable selling
-    if (op == 3) {
+    if (op == 0x3f4bb568) {
         return handle_disable_selling();
     }
 
     ;; Accept last bid
-    if (op == 4) {
+    if (op == 0x569921e8) {
         return handle_accept_last_bid();
     }
 
