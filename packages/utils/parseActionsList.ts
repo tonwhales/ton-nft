@@ -1,4 +1,4 @@
-import {RawCurrencyCollection, RawMessage, Slice} from "ton";
+import {Cell, RawCurrencyCollection, RawMessage, Slice} from "ton";
 import {readCurrencyCollection, readMessage} from "./messageUtils";
 
 // out_list_empty$_ = OutList 0;
@@ -25,31 +25,38 @@ export type OutAction =
     | ReserveCurrencyAction
     | UnknownOutAction
 
-export function parseActionsList(actions: Slice): OutAction[] {
+export function parseActionsList(actions: Slice|Cell): OutAction[] {
     let list: any[] = []
 
     let ref: Slice
 
     let outAction: OutAction
 
+    let slice
+    if (actions instanceof Cell) {
+        slice = Slice.fromCell(actions)
+    } else {
+        slice = actions
+    }
+
     try {
-        ref = actions.readRef()
+        ref = slice.readRef()
     } catch (e) {
         return list
     }
 
-    let magic = actions.readUint(32).toNumber()
+    let magic = slice.readUint(32).toNumber()
     if (magic === 0x0ec3c86d) {
         outAction = {
             type: 'send_msg',
-            mode: actions.readUint(8).toNumber(),
-            message: readMessage(actions.readRef())
+            mode: slice.readUint(8).toNumber(),
+            message: readMessage(slice.readRef())
         }
     } else if (magic === 0x36e6b809) {
         outAction = {
             type: 'reserve_currency',
-            mode: actions.readUint(8).toNumber(),
-            currency: readCurrencyCollection(actions)
+            mode: slice.readUint(8).toNumber(),
+            currency: readCurrencyCollection(slice)
         }
     } else {
         outAction = { type: 'unknown' }

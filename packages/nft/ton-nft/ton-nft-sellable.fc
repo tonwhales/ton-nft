@@ -2,6 +2,15 @@
 ;;  TON NFT Smart Contract
 ;;
 
+int ApiOps::GiftTo() inline { return 0x9d84cf96; }
+int ApiOps::PlaceBid() inline { return 0x5cb63e53; }
+int ApiOps::EnableSelling() inline { return 0x2ed7c261; }
+int ApiOps::DisableSelling() inline { return 0x3f4bb568; }
+int ApiOps::AcceptLastBid() inline { return 0x569921e8; }
+
+int ResponseCodes::OpNotSupported() inline { return 0xffffffff; }
+int ResponseCodes::OpNotAllowed() inline { return 0xfffffffe; }
+
 
 ;; sender_address, query_id, op, msg_value
 global (slice, int, int, int) query_info;
@@ -233,10 +242,14 @@ slice pack_std_addr(int wc, int addr) {
     (int sender_wc, int sender_address) = parse_std_addr(sender);
 
     ;; Check that sender is owner
-    throw_unless(400, (owner_wc == sender_wc) & (owner_address == sender_address));
+    if ((owner_wc != sender_wc) | (owner_address != sender_address)) {
+        return send_error(ResponseCodes::OpNotAllowed());
+    }
 
-    ;; Throw if trying to gift yourself
-    throw_if(400, (owner_wc == destination_wc) & (owner_address == destination_address));
+    ;; Send error if trying to gift yourself
+    if ((owner_wc == destination_wc) & (owner_address == destination_address)) {
+        return send_error(ResponseCodes::OpNotAllowed());
+    }
 
     var new_owner_address = pack_std_addr(destination_wc, destination_address);
     store_data((metadata, creator, new_owner_address, content, sales));    
@@ -261,23 +274,31 @@ slice pack_std_addr(int wc, int addr) {
         slice royalties_destination
     ) = ds~load_sales_data();
 
-    ;; Throw if NFT is not on sale
-    throw_if(400, is_on_sale == 0);
+    ;; Send error if NFT is not on sale
+    if (is_on_sale == 0) {
+        return send_error(ResponseCodes::OpNotAllowed());
+    }
 
     ;; Substract reserved 1TON for fees
     var bid_value = msg_value - 1000000000;
 
-    ;; Throw if bid is less than 0.1TON
-    throw_if(400, bid_value < 100000000);
+    ;; Send error if bid is less than 0.1TON
+    if (bid_value < 100000000) {
+        return send_error(ResponseCodes::BidTooSmall());
+    }
 
-    ;; Throw if last bid was greater or equal
-    throw_if(400, last_bid_value >= bid_value);
+    ;; Send error if last bid was greater or equal
+    if (last_bid_value >= bid_value) {
+        return send_error(ResponseCodes::BidTooSmall());
+    }
 
     (int owner_wc, int owner_address) = parse_std_addr(owner);
     (int sender_wc, int sender_addr) = sender_address.parse_std_addr();
 
-    ;; Throw if bidder is owner
-    throw_if(400, (owner_wc == sender_wc) & (sender_addr == owner_address));
+    ;; Send error if bidder is owner
+    if ((owner_wc == sender_wc) & (sender_addr == owner_address)) {
+        return send_error(ResponseCodes::OpNotAllowed());
+    }
 
     ;; Return value to previous bidder if last_bid > 0 and bid is not historical
     if ((last_bid_value > 0) & ( ~ is_last_bid_historical )) {
@@ -333,14 +354,18 @@ slice pack_std_addr(int wc, int addr) {
         slice royalties_destination
     ) = ds~load_sales_data();
 
-    ;; Throw if already on sale
-    throw_if(400, is_on_sale == 1);
+    ;; Send error if already on sale
+    if (is_on_sale == 1) {
+        return send_error(ResponseCodes::AlreadyOnSale());
+    }
  
     (int owner_wc, int owner_address) = parse_std_addr(owner);
     (int sender_wc, int sender_address) = parse_std_addr(sender_address);
 
-    ;; Throw if sender is not owner
-    throw_unless(400, (owner_wc == sender_wc) & (sender_address == owner_address));
+    ;; Check that sender is owner
+    if ((owner_wc != sender_wc) | (owner_address != sender_address)) {
+        return send_error(ResponseCodes::OpNotAllowed());
+    }
 
     var sales_data = (
         1,                  ;; Set selling
@@ -387,14 +412,18 @@ slice pack_std_addr(int wc, int addr) {
         slice royalties_destination
     ) = ds~load_sales_data();
 
-    ;; Throw if already not on sale
-    throw_if(400, is_on_sale == 0);
+    ;; Send error if already not on sale
+    if (is_on_sale == 0) {
+        return send_error(ResponseCodes::AlreadyNotOnSale());
+    }
  
     (int owner_wc, int owner_address) = parse_std_addr(owner);
     (int sender_wc, int sender_address) = parse_std_addr(sender_address);
 
-    ;; Throw if sender is not owner
-    throw_unless(400, (owner_wc == sender_wc) & (sender_address == owner_address));
+    ;; Check that sender is owner
+    if ((owner_wc != sender_wc) | (owner_address != sender_address)) {
+        return send_error(ResponseCodes::OpNotAllowed());
+    }
 
     ;; Return last bid value to bidder if bid is not historical
     if (is_last_bid_historical == 0) {
@@ -535,7 +564,10 @@ slice pack_std_addr(int wc, int addr) {
     ;; 'gift'
     if (command == 0x67696674) {
         ;; 'To:'
-        throw_if(400, msg_body~load_uint(24) != 0x546f3a);
+        if (msg_body~load_uint(24) != 0x546f3a) {
+            ;; Operation not supported
+            return send_error(0xffffffff);
+        }
         
         (int dest_wc, int dest_addr) = msg_body~parse_raw_text_address();
 
@@ -562,8 +594,8 @@ slice pack_std_addr(int wc, int addr) {
         return handle_accept_last_bid();
     }
 
-    ;; Unknown operation
-    throw(400);
+    ;; Operation not supported
+    return send_error(ResponseCodes::OpNotSupported());
 }
 
 () recv_internal(int smc_balance, int msg_value, cell msg, slice msg_body) {
@@ -601,7 +633,7 @@ slice pack_std_addr(int wc, int addr) {
     }
 
     ;; Gift to
-    if (op == 0x9d84cf96) {
+    if (op == ApiOps::GiftTo()) {
         var dest_addr = msg_body~load_msg_addr();
 
         (int wc, int addr) = parse_std_addr(dest_addr);
@@ -609,26 +641,27 @@ slice pack_std_addr(int wc, int addr) {
     }
 
     ;; Place a bid
-    if (op == 0x5cb63e53) {
+    if (op == ApiOps::PlaceBid()) {
         return handle_place_a_bid();
     }
 
     ;; Enable selling
-    if (op == 0x2ed7c261) {
+    if (op == ApiOps::EnableSelling()) {
         return handle_enable_selling();
     }
 
     ;; Disable selling
-    if (op == 0x3f4bb568) {
+    if (op == ApiOps::DisableSelling()) {
         return handle_disable_selling();
     }
 
     ;; Accept last bid
-    if (op == 0x569921e8) {
+    if (op == ApiOps::AcceptLastBid()) {
         return handle_accept_last_bid();
     }
 
-    throw(400);
+    ;; Operation not supported
+    return send_error(ResponseCodes::OpNotSupported());
 }
 
 () recv_external(slice in_msg) {
@@ -715,10 +748,10 @@ cell get_nft_sales_info() method_id {
 ;;
 
 (int, int, int, int, int) supported_interfaces() method_id {
-    ;; 60197: Basic NFT interface
+    ;; 61457: Basic NFT interface
     ;; 97398: Basic NFT interface with comment messages
-    ;; 124087: Sellable NFT interface
+    ;; 76948: Sellable NFT interface
     ;; 37183: Sellable NFT interface with comment messages
     ;; 81264: BasicIntrospection
-    return (60197, 97398, 124087, 37183, 81264);
+    return (61457, 97398, 76948, 37183, 81264);
 }

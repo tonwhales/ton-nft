@@ -1,0 +1,247 @@
+;;
+;;  ERC721 implementation on TON
+;;
+
+int ApiOps::Mint() inline { return 1; }
+
+int ResponseCodes::OpNotSupported() inline { return 0xffffffff; }
+int ResponseCodes::OpNotAllowed() inline { return 0xfffffffe; }
+
+;; sender_address, query_id, op, msg_value
+global (slice, int, int, int) query_info;
+
+
+;;
+;;
+;;  Storage
+;;
+;;  uint1 inited
+;;  cell name
+;;  cell symbol
+;;  uint256 supply
+;;  content Map<uint256 token_id, cell content>
+;;  owners Map<uint256 token_id, cell address>
+;;  balances Map<slice address, uint256 token_count>
+;;  approvals Map<uint256, slice address>
+;;
+;;
+;;
+;;
+;;
+;;
+
+_ load_data() impure {
+    slice ds = get_data().begin_parse();
+    int inited = ds~load_uint(1);     ;; inited
+    var res = (
+        ds~load_ref(),                ;; name
+        ds~load_ref(),                ;; symbol
+        ds~load_uint(256),            ;; supply
+        ds~load_dict(),               ;; content map
+        ds~load_dict(),               ;; owners map
+        ds~load_dict()
+    );
+    ds.end_parse();
+    return res;
+}
+
+() store_data(var ds) impure {
+    (cell name, cell symbol, int supply, cell content, cell owners, cell approvals) = ds;
+    set_data(
+        begin_cell()
+            .store_uint(1, 1)
+            .store_ref(name)
+            .store_ref(symbol)
+            .store_uint(supply, 256)
+            .store_dict(content)
+            .store_dict(owners)
+            .store_dict(approvals)
+            .end_cell()
+    );
+}
+
+;;
+;; Serializes
+;; addr_std$10 anycast:(Maybe Anycast) workchain_id:int8 address:bits256 = MsgAddressInt;
+;; output is 267 bits
+;;
+slice pack_std_addr(int wc, int addr) {
+    return begin_cell()
+        .store_uint(2, 2)
+        .store_uint(0, 1)
+        .store_int(wc, 8)
+        .store_uint(addr, 256)
+        .end_cell()
+        .begin_parse();
+}
+
+() send_response(slice addr, int tag, int query_id, int body, int grams, int mode) impure {
+    var msg = begin_cell()
+        .store_uint (0x18, 6)
+        .store_slice(addr)
+        .store_grams(grams)
+        .store_uint (0, 1 + 4 + 4 + 64 + 32 + 1 + 1)
+        .store_uint (tag, 32)
+        .store_uint (query_id, 64);
+    if (body >= 0) {
+        msg~store_uint(body, 32);
+    }
+    send_raw_message(msg.end_cell(), mode);
+}
+
+() send_error(int error_code) impure {
+    var (addr, query_id, op, _) = query_info;
+    return send_response(addr, error_code, query_id, op, 0, 64);
+}
+
+() send_ok(int price) impure {
+    var (addr, query_id, op, _) = query_info;
+    if (price == 0) {
+        return send_response(addr, 0xef6b6179, query_id, op, 0, 64);
+    }
+
+    raw_reserve(price, 4);
+    return send_response(addr, 0xef6b6179, query_id, op, 0, 128);
+}
+
+() handle_mint(cell token_uri) impure {
+    (cell name, cell symbol, int supply, cell content, cell owners, cell approvals) = load_data();
+    
+    var (slice sender_address, _, _, _) = query_info;
+
+    (int minter_wc, int minter_addr) = parse_std_addr(sender_address);
+
+    ;; Create next token
+    int token_id = supply + 1;
+
+    ;; Set new owner
+    owners~idict_set(256, token_id, pack_std_addr(minter_wc, minter_addr));
+
+    ;; Store token uri
+    content~idict_set(256, token_id, token_uri.begin_parse());
+
+    ;; Save data
+    store_data(name, symbol, supply + 1, content, owners, approvals);
+
+    return ();
+}
+
+() recv_internal(int smc_balance, int msg_value, cell msg, slice msg_body) impure {
+    ;; ignore empty messages
+    if (msg_body.slice_empty?()) {
+        return ();
+    }
+
+    slice cs = msg.begin_parse();
+    int flags = cs~load_uint(4);
+
+    ;; Ignore all bounced messages
+    if (flags & 1) {
+        return ();
+    }
+
+    slice sender_address = cs~load_msg_addr();
+    var (wc, address) = sender_address.parse_std_addr();
+
+    ;; We don't support empty messages
+    if (msg_body.slice_empty?()) {
+        return send_error(ResponseCodes::OpNotSupported());
+    }
+
+    int flags = cs~load_uint(4);
+    slice sender = cs~load_msg_addr();
+
+    int op = msg_body~load_uint(32);
+    int query_id = msg_body~load_uint(64);
+
+    query_info = (sender_address, query_id, op, msg_value);
+
+    if (op == ApiOps::Mint()) {
+        cell token_uri = msg_body~load_ref();
+        handle_mint(token_uri);
+        return send_ok(0);
+    }
+
+
+    return send_error(ResponseCodes::OpNotSupported());
+}
+
+() recv_external(slice in_msg) impure {
+    ;; noop
+}
+
+() transfer_from(int from, int to, int token_id, cell data) impure {
+    return ();
+}
+
+() approve(int approved, int token_id) impure {
+    return ();
+}
+
+() set_approval_for_all(int operator_address, int approved) impure {
+    return ();
+}
+
+() get_approved(int token_id) method_id {
+    return ();
+}
+
+() is_approved_for_all(int owner_address, int operator_address) method_id {
+    return ();
+}
+
+;;
+;;  Metadata
+;;
+
+int balance_of(int wc, int address) method_id {
+    return 0;
+}
+
+(int, int) owner_of(int token_id) method_id {
+    (cell name, cell symbol, int supply, cell content, cell owners, cell approvals) = load_data();
+    (slice owner, int owner_exists) = owners.idict_get?(256, token_id);
+
+    ;; Trow if owner not found
+    throw_if(403, ~ owner_exists);
+
+    var (wc, address) = owner.parse_std_addr();
+
+    return (wc, address);
+}
+
+cell name() method_id {
+	(cell name, _, _, _, _, _) = load_data();
+	return name;
+}
+
+cell symbol() method_id {
+    (_, cell symbol, _, _, _, _) = load_data();
+    return symbol;
+}
+
+(slice) token_uri(int token_id) method_id {
+    (_, _, _, cell content, _, _) = load_data();
+    (slice s, int r) = content.idict_get?(256, token_id);
+    return s;
+}
+
+(cell) get_tokens() method_id {
+    (_, _, _, cell content, _, _) = load_data();
+    var out = begin_cell().store_dict(content).end_cell();
+    return (out);
+    ;; return (content);
+}
+
+int total_supply() method_id {
+    (_, _, int supply, _, _, _) = load_data();
+    return supply;
+}
+
+int token_by_index(int index) method_id {
+    return 0;
+}
+
+int token_of_owner_by_index(int index) method_id {
+    return 0;
+}

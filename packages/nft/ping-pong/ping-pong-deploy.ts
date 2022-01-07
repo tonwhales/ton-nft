@@ -30,19 +30,24 @@ async function deploy() {
     console.log('contrct address', address)
 
     let client = new TonClient({
-        endpoint: 'https://testnet.toncenter.com/api/v2/jsonRPC'
+        endpoint: 'https://test.tonwhales.com/api/jsonRPC'
     })
 
     let msgCell = new Cell()
     msgCell.bits.writeUint(0, 1)
 
-    await client.sendExternalMessage(
-        {
-            address,
-            source: contractSource
-        },
-        msgCell
-    )
+    try {
+        await client.sendExternalMessage(
+            {
+                address,
+                source: contractSource
+            },
+            msgCell
+        )
+    } catch (e) {
+        console.log(e)
+    }
+
 
     console.log('Init message was sent to', address)
 }
