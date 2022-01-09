@@ -1,0 +1,126 @@
+int ApiOps::GiftTo() inline { return 0x9d84cf96; }
+
+(slice, _) ~load_very_inner(slice ds) {
+    var res = (
+        ds~load_uint(256)    ;; x
+    );
+    return (ds, res);
+}
+
+(slice, _) ~load_very_inner_ref(slice box_ds) inline {
+    var very_inner_cell = box_ds~load_ref();
+    var ds = very_inner_cell.begin_parse();
+    var very_inner_data = ds~load_very_inner();
+    ds.end_parse();
+    return (box_ds, very_inner_data);
+}
+
+cell build_very_inner(var ds) {
+    (
+        int x
+    ) = ds;
+
+    return begin_cell()
+        .store_uint(x, 256)
+        .end_cell();
+}
+
+builder store_very_inner(builder _b, var ds) inline {
+    (
+        int x
+    ) = ds;
+
+    return _b.store_ref(build_very_inner(x));
+}
+
+(slice, _) ~load_inner(slice ds) {
+    var res = (
+        ds~load_uint(256),    ;; x
+        ds~load_very_inner_ref()    ;; very_inner
+    );
+    return (ds, res);
+}
+
+(slice, _) ~load_inner_ref(slice box_ds) inline {
+    var inner_cell = box_ds~load_ref();
+    var ds = inner_cell.begin_parse();
+    var inner_data = ds~load_inner();
+    ds.end_parse();
+    return (box_ds, inner_data);
+}
+
+cell build_inner(var ds) {
+    (
+        int x,
+        var very_inner
+    ) = ds;
+
+    return begin_cell()
+        .store_uint(x, 256)
+        .store_very_inner(very_inner)
+        .end_cell();
+}
+
+builder store_inner(builder _b, var ds) inline {
+    (
+        int x,
+        var very_inner
+    ) = ds;
+
+    return _b.store_ref(build_inner(x,(very_inner)));
+}
+
+(slice, _) ~load_test(slice ds) {
+    var res = (
+        ds~load_uint(256),    ;; a
+        ds~load_uint(256),    ;; b
+        ds~load_uint(256),    ;; c
+        ds~load_inner_ref()    ;; inner
+    );
+    return (ds, res);
+}
+
+(slice, _) ~load_test_ref(slice box_ds) inline {
+    var test_cell = box_ds~load_ref();
+    var ds = test_cell.begin_parse();
+    var test_data = ds~load_test();
+    ds.end_parse();
+    return (box_ds, test_data);
+}
+
+cell build_test(var ds) {
+    (
+        int a,
+        int b,
+        int c,
+        var inner
+    ) = ds;
+
+    return begin_cell()
+        .store_uint(a, 256)
+        .store_uint(b, 256)
+        .store_uint(c, 256)
+        .store_inner(inner)
+        .end_cell();
+}
+
+builder store_test(builder _b, var ds) inline {
+    (
+        int a,
+        int b,
+        int c,
+        var inner
+    ) = ds;
+
+    return _b.store_ref(build_test(a,b,c,(inner)));
+}
+
+
+
+(cell) main() {
+    cell test = build_test(1, 2, 3, (4, (5)));
+    ;; return test;
+    slice ds = test.begin_parse();
+    (int a, int b, int c, (int x, (int y))) = ds~load_test();
+    return build_test(a, b, c, (x, (y)));
+}
